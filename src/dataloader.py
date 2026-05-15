@@ -1,7 +1,7 @@
 import glob
 import torchio as tio
 import pytorch_lightning as pl
-from dataset import SpatioTemporalDatasetJSON, SpatioTemporalDatasetValidation, SpatioTemporalDataset
+from dataset import  SpatioTemporalDatasetValidation, SpatioTemporalDataset
 import pandas as pd
 import random
 import os
@@ -29,7 +29,9 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
         self.test_subjects = None
         self.seed = seed
         self.transform = tio.Compose([
-            tio.CropOrPad((192,192,192)),
+
+            tio.CropOrPad((224,224,224)),
+            tio.Resize((128,128,128)),
             tio.RescaleIntensity(out_min_max=(0,1), percentiles=(0.05,99.5)),
         ])
         self.data_train = []

@@ -47,7 +47,7 @@ class UnetUpBlock(nn.Module):
         self.conv_block = Conv3dReLU(out_channels * 2, out_channels, kernel_size=1)
 
         self.spatial_dims = 3
-        self.time_mlp = nn.Linear(t_dim, out_channels, bias=True)
+        self.time_mlp = nn.Linear(t_dim, out_channels * 2, bias=True)
 
     def forward(self, x, t, x_skip):
         t_embed = self.time_mlp(t)
@@ -55,7 +55,10 @@ class UnetUpBlock(nn.Module):
         out = self.upsample(x)
         out = torch.cat((out, x_skip), dim=1)
         out = self.conv_block(out)
-        out = out + t_embed.view(1, -1, 1, 1 ,1)
+        gamma, beta = t_embed.chunk(2, dim=-1)
+        gamma = gamma.view(*gamma.shape, *spatial_shape)
+        beta = beta.view(*beta.shape, *spatial_shape)
+        out = out * gamma + beta
         return out
 
 class UnetUpBlockNoSkip(nn.Module):

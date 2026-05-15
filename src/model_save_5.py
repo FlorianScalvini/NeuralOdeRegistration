@@ -62,7 +62,7 @@ class TemporalFusion(nn.Module):
 
     def __init__(self,
                  feat_dim: int = 256,
-                 z_dim:    int = 512,
+                 z_dim:    int = 128,
                  nhead:    int = 4,
                  dropout:  float = 0.0):
         super().__init__()
@@ -172,7 +172,7 @@ class ContextEncoder(nn.Module):
                 nn.SiLU()
         )
         self.img_pool = ImageFeaturePooler()
-        self.temp_fusion =TemporalFusion(z_dim=512, nhead=4, dropout=0.0)
+        self.temp_fusion =TemporalFusion(z_dim=128, nhead=4, dropout=0.0)
 
     def forward(self, imgs : torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         feat_list = []
@@ -185,17 +185,14 @@ class ContextEncoder(nn.Module):
 
 
 class ODEFunction(nn.Module):
-    def __init__(self, vnet, imageA, imageB, ageA, ageB):
+    def __init__(self, vnet, images, t0):
         super().__init__()
         self.vnet = vnet
-        self.imageA = imageA
-        self.imageB = imageB
-        self.ageA = ageA
-        self.ageB = ageB
-
+        self.images = images
+        self.t0 = t0
 
     def forward(self, t, phi_t):
-        v = self.vnet(t, phi_t, self.imageA, self.imageB, self.ageA, self.ageB)
+        v = self.vnet(t, phi_t, self.images)
         return v
 
 
@@ -231,31 +228,28 @@ class SinusoidalPositionEmbeddings(nn.Module):
 
 
 class VelocityNet(nn.Module):
-    def __init__(self,reg_head_chan=16,  z_dim=512):
+    def __init__(self,reg_head_chan=16,  z_dim=128):
         super().__init__()
-        self.shape = [128,128,128]
+        self.shape = [192,192,192]
 
         self.grid = generate_grid3d_tensor(self.shape).cuda()
-        t_dim_enc = 16
-        t_dim = 48
+        t_dim = 16
         #self.model = TransMorphCascadeAdFullRes(grid)
-        self.encoder = EncoderUnet(in_channels=3, channels=[16, 32, 64, 128, 256], t_dim=t_dim)
+        self.encoder = EncoderUnet(in_channels=1, channels=[16, 32, 64, 128, 256], t_dim=t_dim)
         self.decoder_0 = UnetUpBlock(in_channels=256, out_channels=128, kernel_size=3, t_dim=t_dim)
         self.decoder_1 = UnetUpBlock(in_channels=128, out_channels=64, kernel_size=3, t_dim=t_dim)
         self.decoder_2 = UnetUpBlock(in_channels=64, out_channels=32, kernel_size=3, t_dim=t_dim)
         self.decoder_3 = UnetUpBlock(in_channels=32, out_channels=16, kernel_size=3, t_dim=t_dim)
-        self.temp_enc = SinusoidalPositionEmbeddings(t_dim_enc, max_periods=100)
         self.time_mlp = nn.Sequential(
-            nn.Linear(t_dim_enc * 3, t_dim, bias=True),
-            nn.SiLU(),
-            nn.Linear(t_dim, t_dim, bias=True),
+                SinusoidalPositionEmbeddings(t_dim, max_periods=100),
+                nn.Linear(t_dim, t_dim, bias=True),
+                nn.SiLU()
         )
 
-        '''
         self.film_0 = FiLM(z_dim=z_dim, n_chan=128)
         self.film_1 = FiLM(z_dim=z_dim, n_chan=64)
         self.film_2 = FiLM(z_dim=z_dim, n_chan=32)
-        '''
+
         self.reg_head = nn.Sequential(
             nn.Conv3d(reg_head_chan, reg_head_chan, kernel_size=3, padding=1),
             nn.LeakyReLU(),
@@ -265,30 +259,20 @@ class VelocityNet(nn.Module):
         )
 
 
-    def forward(self, t, phi_t, image_A, image_B, ageA, ageB):
+    def forward(self, t, phi_t, image_t0):
         with torch.no_grad():
             df = phi_t - self.grid
-            warped = warp(image_A, df)
-            input = torch.cat([image_A, warped, image_B], dim=1)
-            B = phi_t.shape[0]
+            warped = warp(image_t0, df)
+
+        B = phi_t.shape[0]
         if t.dim() == 0:
             t = t.expand(B)
-        if ageA.dim() == 0:
-            ageA = ageA.expand(B)
-        if ageB.dim() == 0:
-            ageB = ageB.expand(B)
-
-        t = self.temp_enc((t - ageA) / ageB)
-        ageB = self.temp_enc(ageB)
-        ageA = self.temp_enc(ageA)
-        t_all = torch.cat([ageA, t, ageB], dim=1)
-        t_all = self.time_mlp(t_all)
-
-        feat_maps = self.encoder(input, t_all)
-        v = self.decoder_0(feat_maps[4], t_all, feat_maps[3])
-        v = self.decoder_1(v, t_all, feat_maps[2])
-        v = self.decoder_2(v, t_all, feat_maps[1])
-        v = self.decoder_3(v, t_all, feat_maps[0])
+        t = self.time_mlp(t)
+        feat_maps = self.encoder(warped, t)
+        v = self.decoder_0(feat_maps[4], t, feat_maps[3])
+        v = self.decoder_1(v, t, feat_maps[2])
+        v = self.decoder_2(v, t, feat_maps[1])
+        v = self.decoder_3(v, t, feat_maps[0])
         v = self.reg_head(v)
         return v
 
@@ -341,7 +325,7 @@ class LongitudinalODERegistration(nn.Module):
 
         self.ctx_imgs = ContextEncoder()
 
-    def forward(self, imageA: torch.Tensor, imageB: torch.Tensor, ageB: torch.Tensor, ages,
+    def forward(self, image: torch.Tensor, ages: torch.Tensor,
                 grid: torch.Tensor) -> torch.Tensor:
         """
         image : (B, 1, H, W, D)
@@ -352,10 +336,10 @@ class LongitudinalODERegistration(nn.Module):
         """
 
         # ── 1. encode source image once ───────────────────────────
-                    # (B, 1)
+        t0 = ages[0:1]                      # (B, 1)
         #z = self.ctx_imgs(image, ages)
         # ── 5. ODE integration  dφ/dT = v(T) ─────────────────────
-        ode_func = ODEFunction(self.velocity_net, imageA, imageB, ages[0], ageB)
+        ode_func = ODEFunction(self.velocity_net, image[0:1], t0)
         phi_traj = odeint(
             ode_func,
             grid,
@@ -424,7 +408,7 @@ class RegistrationLongitudinal(pl.LightningModule):
         self.registration = LongitudinalODERegistration()
         self.learning_rate = learning_rate
         self.save_dir = save_dir
-        self.loss_seg = nn.MSELoss()
+        self.loss_seg = monai.losses.DiceCELoss()
         self.loss = monai.losses.LocalNormalizedCrossCorrelationLoss(kernel_size=21)
         self.discrimation_loss = nn.BCEWithLogitsLoss()
         self.loss_reg = monai.losses.BendingEnergyLoss(True)
@@ -446,8 +430,8 @@ class RegistrationLongitudinal(pl.LightningModule):
         return [opt_G, opt_G], [lr_scheduler_G, lr_scheduler_G]
 
 
-    def forward(self, source, target, age_target, ages, grid):
-        return self.registration(source, target, age_target, ages, grid)
+    def forward(self, images, ages, grid):
+        return self.registration(images, ages, grid)
 
     def training_step(self, batch, batch_idx):
         opt_G, opt_D = self.optimizers()
@@ -460,11 +444,10 @@ class RegistrationLongitudinal(pl.LightningModule):
         images = images.squeeze(0)
         ages = ages.squeeze(0).to(self.device)
         initial_img = images[0:1].float()
-        target_img = images[-1:].float()
         initial_seg = F.one_hot(segs[:, 0].squeeze(0).cpu().long(), num_classes=-1).permute(0, 4, 1, 2, 3)
 
         if not self.discriminator_step:
-            all_phi = self(initial_img, target_img, ages[-1], ages, grid)
+            all_phi = self(initial_img, ages, grid)
             grid_voxel = (grid + 1.) / 2. * scale_factor
             all_phi_v = (all_phi + 1.) / 2. * scale_factor
 
@@ -480,7 +463,7 @@ class RegistrationLongitudinal(pl.LightningModule):
                 df = phi - grid_voxel
                 warped = warp(initial_img, df)
                 warped_seg = warp(initial_seg.float().to(self.device), df)
-                #loss_sim += self.loss(warped, images[idx:idx + 1].float())
+                loss_sim += self.loss(warped, images[idx:idx + 1].float())
                 loss_seg += self.loss_seg(warped_seg, F.one_hot(segs[:, idx].squeeze(0).cpu().long(), num_classes=initial_seg.shape[1]).permute(0, 4, 1, 2, 3).float().to(self.device))
                 count_real += 1
                 loss_reg += self.loss_reg(df)
@@ -578,10 +561,8 @@ class RegistrationLongitudinal(pl.LightningModule):
         images = images.squeeze(0)
         ages = ages.squeeze(0).to(self.device)
         shape = images.shape[2:]
-        initial_img = images[0:1].float()
-        target_img = images[-1:].float()
         with torch.no_grad():
-            all_phi = self(initial_img, target_img, ages[-1], ages, grid)
+            all_phi = self(images.float(), ages, grid)
         grid_voxel = (grid + 1.) / 2. * scale_factor
         all_registered = []
         all_targets = []

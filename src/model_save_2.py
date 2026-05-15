@@ -11,6 +11,7 @@ from torchvision.utils import make_grid
 import pystrum.pynd.ndutils as nd
 from torchvision.utils import save_image
 import json
+import itertools
 
 class TimeEncoder(nn.Module):
     def __init__(self, t_dim: int = 64, dim: int = 256):
@@ -233,7 +234,7 @@ class SinusoidalPositionEmbeddings(nn.Module):
 class VelocityNet(nn.Module):
     def __init__(self,reg_head_chan=16,  z_dim=512):
         super().__init__()
-        self.shape = [128,128,128]
+        self.shape = [192,192,192]
 
         self.grid = generate_grid3d_tensor(self.shape).cuda()
         t_dim_enc = 16
@@ -424,7 +425,7 @@ class RegistrationLongitudinal(pl.LightningModule):
         self.registration = LongitudinalODERegistration()
         self.learning_rate = learning_rate
         self.save_dir = save_dir
-        self.loss_seg = nn.MSELoss()
+        self.loss_seg = monai.losses.DiceCELoss()
         self.loss = monai.losses.LocalNormalizedCrossCorrelationLoss(kernel_size=21)
         self.discrimation_loss = nn.BCEWithLogitsLoss()
         self.loss_reg = monai.losses.BendingEnergyLoss(True)
@@ -459,28 +460,32 @@ class RegistrationLongitudinal(pl.LightningModule):
 
         images = images.squeeze(0)
         ages = ages.squeeze(0).to(self.device)
-        initial_img = images[0:1].float()
-        target_img = images[-1:].float()
-        initial_seg = F.one_hot(segs[:, 0].squeeze(0).cpu().long(), num_classes=-1).permute(0, 4, 1, 2, 3)
 
-        if not self.discriminator_step:
-            all_phi = self(initial_img, target_img, ages[-1], ages, grid)
-            grid_voxel = (grid + 1.) / 2. * scale_factor
-            all_phi_v = (all_phi + 1.) / 2. * scale_factor
 
+
+
+
+
+        count = 0
+        count_real = 0
+        pairIndexes = itertools.combinations(range(images.shape[0]), 2)
+        for pairIdx in pairIndexes:
             loss_sim = torch.zeros(1, device=self.device)
             loss_seg = torch.zeros(1, device=self.device)
             loss_reg = torch.zeros(1, device=self.device)
             loss_d = torch.zeros(1, device=self.device)
-            count = 0
-            count_real = 0
-
-            for idx in range(1, images.shape[0]):
+            initial_img = images[pairIdx[0]:pairIdx[0]+1].float()
+            target_img = images[pairIdx[1]:pairIdx[1]+1].float()
+            initial_seg = F.one_hot(segs[:, pairIdx[0]].squeeze(0).cpu().long(), num_classes=-1).permute(0, 4, 1, 2, 3)
+            all_phi = self(initial_img, target_img, ages[pairIdx[0]], ages, grid)
+            grid_voxel = (grid + 1.) / 2. * scale_factor
+            all_phi_v = (all_phi + 1.) / 2. * scale_factor
+            for idx in range(pairIdx[0]+1, images.shape[0]):
                 phi = all_phi_v[idx]
                 df = phi - grid_voxel
                 warped = warp(initial_img, df)
                 warped_seg = warp(initial_seg.float().to(self.device), df)
-                #loss_sim += self.loss(warped, images[idx:idx + 1].float())
+                loss_sim += self.loss(warped, images[idx:idx + 1].float())
                 loss_seg += self.loss_seg(warped_seg, F.one_hot(segs[:, idx].squeeze(0).cpu().long(), num_classes=initial_seg.shape[1]).permute(0, 4, 1, 2, 3).float().to(self.device))
                 count_real += 1
                 loss_reg += self.loss_reg(df)
@@ -490,7 +495,7 @@ class RegistrationLongitudinal(pl.LightningModule):
             loss_reg /= max(count, 1)
             loss_sim /= max(count, 1)
             loss_d /= max(count, 1)
-            loss =  loss_sim + self.lambda_seg * loss_seg  +self.lambda_reg * loss_reg + self.lambda_d * loss_d
+            loss =  loss_sim + self.lambda_seg * loss_seg  + self.lambda_reg * loss_reg + self.lambda_d * loss_d
             opt_G.zero_grad()
             #self.clip_gradients(opt_G, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
             self.manual_backward(loss)
@@ -501,62 +506,10 @@ class RegistrationLongitudinal(pl.LightningModule):
                 'loss_sim': loss_sim.item(),
                 'loss_seg': (self.lambda_seg * loss_seg).item(),
                 'loss_reg': (self.lambda_reg * loss_reg).item(),
-                'loss_adv': (self.lambda_d * loss_d).item(),
             }, on_step=True, on_epoch=True, prog_bar=True)
 
-            # ── critical: free the ODE trajectory ──
-            del all_phi, all_phi_v, grid_voxel, loss, loss_sim, loss_reg, loss_d
-
-        else:
-            opt_D.zero_grad()
-
-            with torch.no_grad():
-                all_phi = self(initial_img, ages, grid)
-                grid_voxel = (grid + 1.) / 2. * scale_factor
-                all_phi_v = (all_phi + 1.) / 2. * scale_factor
-
-            loss_D_real = torch.zeros(1, device=self.device)
-            loss_D_fake = torch.zeros(1, device=self.device)
-            loss_D_mismatch = torch.zeros(1, device=self.device)
-            count = 0
-
-            for idx in range(1, images.shape[0]):
-                phi = all_phi_v[idx]
-                df = phi - grid_voxel
-                warped = warp(initial_img, df).detach()
-                age_i = ages[idx:idx + 1].unsqueeze(-1)
-
-                score_fake = self.discriminator(warped, age_i)
-                loss_D_fake += nnf.relu(1. + score_fake).mean()
-
-                real_img = images[idx:idx + 1].float()
-                score_real = self.discriminator(real_img, age_i)
-                loss_D_real += nnf.relu(1. - score_real).mean()
-
-                fake_time = wrong_age(age_i, 0.4)
-                score_mismatch = self.discriminator(real_img, fake_time)
-                loss_D_mismatch += nnf.relu(1. + score_mismatch).mean()
-
-                # ── free per-iteration intermediates ──
-                del warped, phi, df, real_img
-                del score_fake, score_real, score_mismatch, fake_time
-                count += 1
-
-            loss_D = (0.5 * loss_D_fake + loss_D_real + 0.5 * loss_D_mismatch) / max(count, 1)
-
-            self.manual_backward(loss_D)
-            opt_D.step()
-
-            self.log_dict({
-                'loss_D': loss_D.item(),
-                'loss_D_real': loss_D_real.item(),
-                'loss_D_fake': loss_D_fake.item(),
-                'loss_D_mismatch': loss_D_mismatch.item(),
-            }, on_step=True, on_epoch=True, prog_bar=True)
-
-            # ── free the ODE trajectory ──
-            del all_phi, all_phi_v, grid_voxel, loss_D, loss_D_real, loss_D_fake, loss_D_mismatch
-
+        # ── critical: free the ODE trajectory ──
+        del all_phi, all_phi_v, grid_voxel, loss, loss_sim, loss_reg, loss_d
         # ── always flush at end of step ──
         torch.cuda.empty_cache()
 
