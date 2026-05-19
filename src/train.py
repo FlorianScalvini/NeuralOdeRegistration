@@ -42,9 +42,10 @@ def main(args: Namespace) -> None:
         json_path_val=args.json_path_val,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        size=args.size,
+        crop=args.crop,
         t0=args.t0,
-        tn=args.tn,
-        save_config_dir=save_dir,
+        tn=args.tn
     )
 
     # --- Model ---
@@ -53,6 +54,8 @@ def main(args: Namespace) -> None:
         save_dir=save_dir,
         lambda_seg=args.lambda_seg,
         lambda_reg=args.lambda_reg,
+        lambda_sdf=args.lambda_sdf,
+        shape=args.size,
     )
 
     # --- Trainer ---
@@ -147,7 +150,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_epochs",
         type=int,
-        default=1000,
+        default=3000,
         help="Maximum number of training epochs.",
     )
     parser.add_argument(
@@ -163,9 +166,15 @@ if __name__ == "__main__":
         help="Weight for the segmentation loss term.",
     )
     parser.add_argument(
+        "--lambda_sdf",
+        type=float,
+        default=1.0,
+        help="Weight for the SDF loss term.",
+    )
+    parser.add_argument(
         "--lambda_reg",
         type=float,
-        default=0.0001,
+        default=0.3,
         help="Weight for the regularisation loss term.",
     )
     parser.add_argument(
@@ -184,7 +193,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--check_val_every_n_epoch",
         type=int,
-        default=5,
+        default=10,
         help="Run validation every N epochs.",
     )
     parser.add_argument(
@@ -192,6 +201,21 @@ if __name__ == "__main__":
         type=int,
         default=50,
         help="Save a checkpoint every N training steps.",
+    )
+
+    parser.add_argument(
+        "--size",
+        type=int,
+        default=[128, 128, 128],
+        nargs="+",
+        help="Size of resize.",
+    )
+    parser.add_argument(
+        "--crop",
+        type=int,
+        default=[192, 224, 192],
+        nargs="+",
+        help="Size of crop.",
     )
     args = parser.parse_args()
     main(args=args)

@@ -19,7 +19,7 @@ def split_and_shuffled(lst, ratio, seed=None):
 
 
 class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
-    def __init__(self, root_dir, json_path: str, json_path_val: str, batch_size: int, seed=42, num_workers=4, t0=0, tn=1, save_config_dir: str=""):
+    def __init__(self, root_dir, json_path: str, json_path_val: str, batch_size: int, seed=42, num_workers=4, t0=0, tn=1, size=[192, 224, 192], crop=[50, 50, 50]):
         super().__init__()
         self.root_dir = root_dir
         self.json_path = json_path
@@ -28,11 +28,19 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
         self.num_workers = num_workers
         self.test_subjects = None
         self.seed = seed
+        self.size = size
+        self.crop = crop
+
         self.transform = tio.Compose([
 
-            tio.CropOrPad((224,224,224)),
-            tio.Resize((128,128,128)),
+            tio.CropOrPad(crop),
+            tio.Resize(size),
             tio.RescaleIntensity(out_min_max=(0,1), percentiles=(0.05,99.5)),
+        ])
+        self.transform_seg = tio.Compose([
+
+            tio.CropOrPad(crop),
+            tio.Resize(size),
         ])
         self.data_train = []
         self.data_val = []
@@ -78,7 +86,7 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
 
 
     def train_dataloader(self) -> torch.utils.data.DataLoader:
-        dataset = SpatioTemporalDataset(self.data_train, self.transform)
+        dataset = SpatioTemporalDataset(self.data_train, self.transform, self.transform_seg)
         return torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=1,

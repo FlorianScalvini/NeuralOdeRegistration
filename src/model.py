@@ -11,6 +11,7 @@ from torchvision.utils import make_grid
 import pystrum.pynd.ndutils as nd
 from torchvision.utils import save_image
 import json
+import random
 
 class TimeEncoder(nn.Module):
     def __init__(self, t_dim: int = 64, dim: int = 256):
@@ -231,9 +232,9 @@ class SinusoidalPositionEmbeddings(nn.Module):
 
 
 class VelocityNet(nn.Module):
-    def __init__(self,reg_head_chan=16,  z_dim=512):
+    def __init__(self,reg_head_chan=16,  shape=[192, 224, 192]):
         super().__init__()
-        self.shape = [128,128,128]
+        self.shape = shape
 
         self.grid = generate_grid3d_tensor(self.shape).cuda()
         t_dim_enc = 16
@@ -320,11 +321,7 @@ class Conv3dReLU(nn.Sequential):
 
 
 class LongitudinalODERegistration(nn.Module):
-    def __init__(self, in_channels=1, embed_dim=16,
-                 depths=(1,1,2,2), num_heads=(2,2,4,8),
-                 window_size=(7,7,7), patch_size=4,
-                 t_dim=16, vel_dim=256, vel_heads=8,
-                 drop_path_rate=0.2):
+    def __init__(self,  shape=[192, 224, 192], *args, **kwargs):
         super().__init__()
         '''
         self.encoderImage = Encoder(
@@ -337,9 +334,7 @@ class LongitudinalODERegistration(nn.Module):
             t_dim=t_dim, 
             drop_path_rate=drop_path_rate)
         '''
-        self.velocity_net = VelocityNet()
-
-        self.ctx_imgs = ContextEncoder()
+        self.velocity_net = VelocityNet(shape=shape)
 
     def forward(self, imageA: torch.Tensor, imageB: torch.Tensor, ageB: torch.Tensor, ages,
                 grid: torch.Tensor) -> torch.Tensor:
@@ -417,21 +412,21 @@ class Discriminator(nn.Module):
 
 
 class RegistrationLongitudinal(pl.LightningModule):
-    def __init__(self, learning_rate=0.01, save_dir="", lambda_seg=1, lambda_reg=0.001, *args, **kwargs):
+    def __init__(self, learning_rate=0.01, save_dir="", lambda_seg=1, lambda_reg=0.001, lambda_sdf=1, shape=[192, 224, 192], *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.save_hyperparameters()
-        self.discriminator = Discriminator(channels=32)
-        self.registration = LongitudinalODERegistration()
+        #self.discriminator = Discriminator(channels=32)
+        self.registration = LongitudinalODERegistration(shape=shape)
         self.learning_rate = learning_rate
         self.save_dir = save_dir
-        self.loss_seg = nn.MSELoss()
+        self.loss_seg = monai.losses.DiceCELoss()
         self.loss = monai.losses.LocalNormalizedCrossCorrelationLoss(kernel_size=21)
         self.discrimation_loss = nn.BCEWithLogitsLoss()
         self.loss_reg = monai.losses.BendingEnergyLoss(True)
         self.max_dice_score = 0
         self.automatic_optimization = False
         self.discriminator_step = False
-        self.lambda_d = 1
+        self.lambda_sdf = lambda_sdf
         self.lambda_reg = lambda_reg
         self.lambda_seg = lambda_seg
         self.seg_metrics = monai.metrics.DiceMetric()
@@ -452,118 +447,66 @@ class RegistrationLongitudinal(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         opt_G, opt_D = self.optimizers()
 
-        images, segs, ages, is_false = batch
+        images, segs, ages, is_false, sdf = batch
         shape = images[0].shape[2:]
         scale_factor = torch.tensor(shape).to(self.device).view(1, 3, 1, 1, 1) * 1.
         grid = generate_grid3d_tensor(shape).unsqueeze(0).to(self.device)
 
         images = images.squeeze(0)
+        sdf = sdf.squeeze(0)
         ages = ages.squeeze(0).to(self.device)
-        initial_img = images[0:1].float()
+        count = 0
+        count_real = 0
+        loss_sim = torch.tensor(0.0, device=self.device)
+        loss_seg = torch.tensor(0.0, device=self.device)
+        loss_reg = torch.tensor(0.0, device=self.device)
+        loss_sdf = torch.tensor(0.0, device=self.device)
+
         target_img = images[-1:].float()
+        initial_img = images[0:1].float()
+        initial_sdf = sdf[0:1].float()
+
         initial_seg = F.one_hot(segs[:, 0].squeeze(0).cpu().long(), num_classes=-1).permute(0, 4, 1, 2, 3)
+        all_phi = self(initial_img, target_img, ages[-1], ages, grid)
+        all_phi_v = (all_phi + 1.) / 2. * scale_factor
+        grid_voxel = (grid + 1.) / 2. * scale_factor
+        for idx in range(1, images.shape[0]):
+            phi = all_phi_v[idx]
+            df = phi - grid_voxel
+            warped = warp(initial_img, df)
+            warped_seg = warp(initial_seg.float().to(self.device), df)
+            warped_sdf = warp(initial_sdf, df)
+            loss_sim += self.loss(warped, images[idx:idx + 1].float())
+            loss_seg += self.loss_seg(warped_seg, F.one_hot(segs[:, idx].squeeze(0).cpu().long(), num_classes=initial_seg.shape[1]).permute(0, 4, 1, 2, 3).float().to(self.device))
+            loss_sdf += self.loss_seg(warped_sdf, sdf[idx:idx + 1].float())
+            loss_reg += self.loss_reg(df)
+            del warped, phi, df
+        count += 1
+        loss_seg /= max(count, 1)
+        loss_reg /= max(count, 1)
+        loss_sim /= max(count, 1)
+        loss_sdf /= max(count, 1)
+        loss =  loss_sim + self.lambda_seg * loss_seg  + self.lambda_reg * loss_reg + self.lambda_sdf * loss_sdf
+        opt_G.zero_grad()
+        #self.clip_gradients(opt_G, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+        self.manual_backward(loss)
+        opt_G.step()
 
-        if not self.discriminator_step:
-            all_phi = self(initial_img, target_img, ages[-1], ages, grid)
-            grid_voxel = (grid + 1.) / 2. * scale_factor
-            all_phi_v = (all_phi + 1.) / 2. * scale_factor
+        self.log_dict({
+            'loss_G': loss.item(),
+            'loss_sim': loss_sim.item(),
+            'loss_seg': (self.lambda_seg * loss_seg).item(),
+            'loss_reg': (self.lambda_reg * loss_reg).item(),
+        }, on_step=True, on_epoch=True, prog_bar=True)
 
-            loss_sim = torch.zeros(1, device=self.device)
-            loss_seg = torch.zeros(1, device=self.device)
-            loss_reg = torch.zeros(1, device=self.device)
-            loss_d = torch.zeros(1, device=self.device)
-            count = 0
-            count_real = 0
-
-            for idx in range(1, images.shape[0]):
-                phi = all_phi_v[idx]
-                df = phi - grid_voxel
-                warped = warp(initial_img, df)
-                warped_seg = warp(initial_seg.float().to(self.device), df)
-                #loss_sim += self.loss(warped, images[idx:idx + 1].float())
-                loss_seg += self.loss_seg(warped_seg, F.one_hot(segs[:, idx].squeeze(0).cpu().long(), num_classes=initial_seg.shape[1]).permute(0, 4, 1, 2, 3).float().to(self.device))
-                count_real += 1
-                loss_reg += self.loss_reg(df)
-                del warped, phi, df
-                count += 1
-            loss_seg /= max(count, 1)
-            loss_reg /= max(count, 1)
-            loss_sim /= max(count, 1)
-            loss_d /= max(count, 1)
-            loss =  loss_sim + self.lambda_seg * loss_seg  +self.lambda_reg * loss_reg + self.lambda_d * loss_d
-            opt_G.zero_grad()
-            #self.clip_gradients(opt_G, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
-            self.manual_backward(loss)
-            opt_G.step()
-
-            self.log_dict({
-                'loss_G': loss.item(),
-                'loss_sim': loss_sim.item(),
-                'loss_seg': (self.lambda_seg * loss_seg).item(),
-                'loss_reg': (self.lambda_reg * loss_reg).item(),
-                'loss_adv': (self.lambda_d * loss_d).item(),
-            }, on_step=True, on_epoch=True, prog_bar=True)
-
-            # ── critical: free the ODE trajectory ──
-            del all_phi, all_phi_v, grid_voxel, loss, loss_sim, loss_reg, loss_d
-
-        else:
-            opt_D.zero_grad()
-
-            with torch.no_grad():
-                all_phi = self(initial_img, ages, grid)
-                grid_voxel = (grid + 1.) / 2. * scale_factor
-                all_phi_v = (all_phi + 1.) / 2. * scale_factor
-
-            loss_D_real = torch.zeros(1, device=self.device)
-            loss_D_fake = torch.zeros(1, device=self.device)
-            loss_D_mismatch = torch.zeros(1, device=self.device)
-            count = 0
-
-            for idx in range(1, images.shape[0]):
-                phi = all_phi_v[idx]
-                df = phi - grid_voxel
-                warped = warp(initial_img, df).detach()
-                age_i = ages[idx:idx + 1].unsqueeze(-1)
-
-                score_fake = self.discriminator(warped, age_i)
-                loss_D_fake += nnf.relu(1. + score_fake).mean()
-
-                real_img = images[idx:idx + 1].float()
-                score_real = self.discriminator(real_img, age_i)
-                loss_D_real += nnf.relu(1. - score_real).mean()
-
-                fake_time = wrong_age(age_i, 0.4)
-                score_mismatch = self.discriminator(real_img, fake_time)
-                loss_D_mismatch += nnf.relu(1. + score_mismatch).mean()
-
-                # ── free per-iteration intermediates ──
-                del warped, phi, df, real_img
-                del score_fake, score_real, score_mismatch, fake_time
-                count += 1
-
-            loss_D = (0.5 * loss_D_fake + loss_D_real + 0.5 * loss_D_mismatch) / max(count, 1)
-
-            self.manual_backward(loss_D)
-            opt_D.step()
-
-            self.log_dict({
-                'loss_D': loss_D.item(),
-                'loss_D_real': loss_D_real.item(),
-                'loss_D_fake': loss_D_fake.item(),
-                'loss_D_mismatch': loss_D_mismatch.item(),
-            }, on_step=True, on_epoch=True, prog_bar=True)
-
-            # ── free the ODE trajectory ──
-            del all_phi, all_phi_v, grid_voxel, loss_D, loss_D_real, loss_D_fake, loss_D_mismatch
-
+        # ── critical: free the ODE trajectory ──
+        del all_phi, all_phi_v, grid_voxel, loss, loss_sim, loss_reg, loss_sdf
         # ── always flush at end of step ──
         torch.cuda.empty_cache()
 
     def on_train_epoch_end(self) -> None:
         self.discriminator_step = False
         torch.cuda.empty_cache()  # ← add this
-        torch.save(self.discriminator.state_dict(), os.path.join(self.save_dir, "last_discriminator.pt"))
         torch.save(self.registration.state_dict(), os.path.join(self.save_dir, "last_registration.pt"))
 
     def on_validation_epoch_start(self) -> None:
@@ -675,7 +618,6 @@ class RegistrationLongitudinal(pl.LightningModule):
 
         if self.max_dice_score < mean_dice:
             self.max_dice_score = mean_dice
-            torch.save(self.discriminator.state_dict(), os.path.join(self.save_dir, "best_discriminator.pt"))
             torch.save(self.registration.state_dict(), os.path.join(self.save_dir, "best_registration.pt"))
 
         torch.cuda.empty_cache()

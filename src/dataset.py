@@ -9,7 +9,7 @@ import json
 from torchio import transforms
 
 class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
-    def __init__(self, data, transform=None):
+    def __init__(self, data, transform=None, transform_seg=None):
         '''
         PairwiseSubjectsDataset
         :param subjects: Sequence of subjects
@@ -17,6 +17,7 @@ class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
         '''
         super().__init__()
         self.transform = transform
+        self.transform_seg = transform_seg
         self.discriminator_phase = False
         self.length_fake_sequence = 5
         self.multi_session = []
@@ -43,17 +44,22 @@ class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
         mri_stack = []
         seg_stack = []
         time_stack = []
+        sdf_stack = []  
         data = self.multi_session[idx]
         for i in range(len(data)):
             session = tio.Subject(
                 image=tio.ScalarImage(data[i][0]),
                 label=tio.LabelMap(data[i][1]) if data[i][1] is not None else None,
+                sdf=tio.ScalarImage(data[i][1].replace("tissue", "sdf_cortex"))
             )
             if self.transform is not None:
-                session = self.transform(session)
-
+                session.image = self.transform(session.image)
+            if self.transform_seg is not None:
+                session.label = self.transform_seg(session.label)
+                session.sdf = self.transform_seg(session.sdf)
 
             mri_stack.append(session.image.data)
+            sdf_stack.append(session.sdf.data)
             if session.label is not None:
                 seg_stack.append(session.label.data)
             time_stack.append(data[i][2])
@@ -90,7 +96,7 @@ class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
         all_mri = mri_stack + mri_stack_mono
         all_seg = seg_stack + seg_stack_mono
         all_times = time_stack + time_stack_mono
-
+        all_sdf = sdf_stack 
         # flag: 0 = multi-session (real), 1 = mono-session (fake)
         is_mono = ([0] * len(mri_stack)) + ([1] * len(mri_stack_mono))
 
@@ -101,7 +107,7 @@ class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
         sorted_indices = sorted(
             range(len(all_times)),
             key=lambda i: (all_times[i], is_mono[i]))  # (age, is_mono) → multi first
-
+        all_sdf = [all_sdf[i] for i in sorted_indices]
         all_mri = [all_mri[i] for i in sorted_indices]
         all_seg = [all_seg[i] for i in sorted_indices]
         all_times = [all_times[i] for i in sorted_indices]
@@ -130,7 +136,7 @@ class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
 
         # ── 5. stack ──────────────────────────────────────────────────
         mri_stack_out = torch.stack(all_mri, dim=0)  # (T_total, 1, X, Y, Z)
-
+        sdf_stack_out = torch.stack(sdf_stack, dim=0)  # (T_total, 1, X, Y, Z)
         if len(all_seg) > 0:
             seg_stack_out = torch.stack(all_seg, dim=0)  # (T_total, C, X, Y, Z)
         else:
@@ -141,7 +147,7 @@ class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
         # is_mono_out[i] = False → real multi-session timepoint
         # is_mono_out[i] = True  → mono-session subject (no NCC supervision)
 
-        return mri_stack_out, seg_stack_out, time_stack_out, is_mono_out
+        return mri_stack_out, seg_stack_out, time_stack_out, is_mono_out, sdf_stack_out
 
 
 
@@ -173,7 +179,7 @@ class SpatioTemporalDatasetValidation(torch.utils.data.dataset.Dataset):
         data = self.multi_session[idx]
         session = tio.Subject(
             image=tio.ScalarImage(data[0][0]),
-            label=tio.LabelMap(data[0][1]) if data[0][1] is not None else None,
+            label=tio.LabelMap(data[0][1]) if data[0][1] is not None else None
         )
         return session['image'].data.affine
 
@@ -191,6 +197,7 @@ class SpatioTemporalDatasetValidation(torch.utils.data.dataset.Dataset):
             session = tio.Subject(
                 image=tio.ScalarImage(data[i][0]),
                 label=tio.LabelMap(data[i][1]) if data[i][1] is not None else None,
+                sdf=tio.ScalarImage(data[i][1].replace("tissue", "sdf_cortex"))
             )
             if self.transform is not None:
                 session = self.transform(session)

@@ -5,7 +5,7 @@ import scipy.ndimage as ndi
 import numpy as np
 import glob
 
-list_seg = glob.glob("/home/florian/Documents/Dataset/dHCP/Subject/*_desc-restore_T2w-mask-brain_bounti-19_affine.nii.gz")
+list_seg = glob.glob("/home/florian/Documents/Dataset/dHCP/Atlas/parcellations/*.nii.gz")
 for path in list_seg:
     seg = tio.Subject(
         seg=tio.LabelMap(path)
@@ -46,4 +46,4 @@ for path in list_seg:
 
     # Optionally save as a new TorchIO image with the same affine/spacing
     sdf_image = tio.ScalarImage(tensor=sdf_tensor.unsqueeze(0), affine=seg.seg.affine)
-    sdf_image.save(path.replace("desc-restore_T2w-mask-brain_bounti-19_affine", "sdf_cortex"))
+    sdf_image.save(path.replace("tissue", "sdf_cortex"))
