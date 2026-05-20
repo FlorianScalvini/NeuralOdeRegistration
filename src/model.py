@@ -8,181 +8,37 @@ from torchvision import transforms
 from unet import *
 from metrics.sdlogjac import SDlogDetJac
 from torchvision.utils import make_grid
-import pystrum.pynd.ndutils as nd
 from torchvision.utils import save_image
 import json
 import random
 
-class TimeEncoder(nn.Module):
-    def __init__(self, t_dim: int = 64, dim: int = 256):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(t_dim, dim), nn.SiLU(),
-            nn.Linear(dim, dim), nn.LayerNorm(dim))
-
-    def forward(self, T: torch.Tensor) -> torch.Tensor:
-        return self.mlp(T)
 
 
-class TemporalFusion(nn.Module):
+def compute_jacobian_determinant_3d(displacement, spacing=(1.0, 1.0, 1.0)):
     """
-    A single learned query cross-attends over N time-aware feature
-    vectors to produce a fixed-size subject context vector z.
+    Compute the Jacobian determinant of a 3D displacement field.
 
-    Why no positional encoding:
-        Each fᵢ was produced by TimeConditionedEncoderUnet which
-        received (image ‖ age_broadcast) as a 2-channel input.
-        The age is therefore encoded in the spatial features
-        themselves — the query reads temporal position implicitly
-        from feature content, not from an external PE signal.
+    Parameters:
+    - displacement: torch.Tensor of shape (3, D, H, W), representing the displacement field.
+    - spacing: tuple of floats (dz, dy, dx), representing the physical spacing between voxels.
 
-    Why N=1 works without special casing:
-        Softmax over a single key collapses to weight=1.0.
-        The query attends fully to the only available vector.
-        z becomes a clean projection of that single feature.
-        No zeroed statistics, no instability, no if-branch.
-
-    Why weights vary per subject:
-        The query is a learned parameter shared across all subjects
-        and all values of N.  It learns to ask "which timepoint
-        tells me most about this trajectory?".  For a subject with
-        rapid late atrophy the last fᵢ will be most distinctive
-        and receive the highest weight.  For a stable subject the
-        weights will be distributed evenly.  This emerges from
-        the registration + segmentation loss — no explicit
-        supervision on the attention weights is needed.
-
-    Args:
-        feat_dim : dimension of each per-image feature vector,
-                   i.e. the output dim of ImageFeaturePooler
-        z_dim    : output context vector dimension
-        nhead    : number of attention heads in cross-attention.
-                   Must divide feat_dim evenly.
-        dropout  : attention dropout (0 is fine for small N)
+    Returns:
+    - jacobian_determinant: torch.Tensor of shape (D, H, W), the Jacobian determinant at each point.
     """
+    displacement = displacement.squeeze(0)
 
-    def __init__(self,
-                 feat_dim: int = 256,
-                 z_dim:    int = 512,
-                 nhead:    int = 4,
-                 dropout:  float = 0.0):
-        super().__init__()
-        self.feat_dim = feat_dim
+    dz, dy, dx = spacing
+    grads = []
+    for i in range(3):  # u_x, u_y, u_z
+        grad_i = torch.gradient(displacement[i], spacing=(dz, dy, dx), dim=(0, 1, 2))
+        grads.append(grad_i)
 
-        # ── Learned query ────────────────────────────────────────
-        # Shape (1, 1, feat_dim): one query vector, expanded to
-        # batch size in forward().  Initialised small so early
-        # training is close to uniform attention over timepoints.
-        self.query = nn.Parameter(
-            torch.randn(1, 1, feat_dim) * 0.02)
-
-        # ── Cross-attention ──────────────────────────────────────
-        # query  : (B, 1, feat_dim)   — the learned question
-        # key    : (B, N, feat_dim)   — one token per timepoint
-        # value  : (B, N, feat_dim)   — same tokens as values
-        # output : (B, 1, feat_dim)   — weighted summary
-        #
-        # batch_first=True means tensors are (B, seq, dim)
-        # which matches our layout throughout.
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=feat_dim,
-            num_heads=nhead,
-            dropout=dropout,
-            batch_first=True)
-
-        # ── Output projection ────────────────────────────────────
-        # Projects the attended feat_dim vector to z_dim and
-        # normalises — keeps z on a consistent scale regardless
-        # of feat_dim choice.
-        self.proj = nn.Sequential(
-            nn.Linear(feat_dim, z_dim),
-            nn.LayerNorm(z_dim),
-        )
-
-    def forward(self,
-                features: torch.Tensor,
-                return_weights: bool = False
-                ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-
-        B = features.shape[0]
-
-        # Expand the single learned query to the full batch
-        # (1, 1, feat_dim) → (B, 1, feat_dim)
-        q = self.query.expand(B, -1, -1)
-
-        # Cross-attention
-        # need_weights=True so we can optionally inspect what the
-        # query attended to.  average_attn_weights=False keeps
-        # per-head weights if nhead > 1 — we average manually below
-        # so the returned shape is always (B, 1, N).
-        attended, attn_weights = self.cross_attn(
-            query=q,
-            key=features,
-            value=features,
-            need_weights=True,
-            average_attn_weights=True)
-        # attended    : (B, 1, feat_dim)
-        # attn_weights: (B, 1, N)   — softmax weights over timepoints
-
-        # Squeeze the singleton sequence dim and project
-        z = self.proj(attended.squeeze(1))   # (B, z_dim)
-
-        if return_weights:
-            return z, attn_weights           # (B, z_dim), (B, 1, N)
-        return z
-
-
-
-class ImageFeaturePooler(nn.Module):
-    """
-    Spatial average pooling + linear projection.
-
-    Input  : (B, in_channels, H, W, D)   CNN bottleneck feature map
-    Output : (B, feat_dim)               one vector per image
-
-    AdaptiveAvgPool3d(1) averages every spatial position into a
-    single value per channel — no parameters, no spatial bias.
-    The Linear + LayerNorm after it re-projects to feat_dim and
-    stabilises the scale fed into cross-attention.
-
-    Args:
-        in_channels : bottleneck channels from EncoderUnet (256)
-        feat_dim    : output dimension, must match TemporalFusion
-    """
-
-    def __init__(self, in_channels: int = 256, feat_dim: int = 256):
-        super().__init__()
-        self.pool = nn.AdaptiveAvgPool3d(1)
-        self.proj = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(in_channels, feat_dim),
-            nn.LayerNorm(feat_dim),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, in_channels, H, W, D) → (B, feat_dim)"""
-        return self.proj(self.pool(x))
-
-class ContextEncoder(nn.Module):
-    def __init__(self, t_dim=16, ):
-        super().__init__()
-        self.encoder_img = EncoderUnet(in_channels=1, channels=[16, 32, 64, 128, 256], t_dim=16)
-        self.time_mlp = nn.Sequential(
-                SinusoidalPositionEmbeddings(t_dim, max_periods=100),
-                nn.Linear(t_dim, t_dim, bias=True),
-                nn.SiLU()
-        )
-        self.img_pool = ImageFeaturePooler()
-        self.temp_fusion =TemporalFusion(z_dim=512, nhead=4, dropout=0.0)
-
-    def forward(self, imgs : torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        feat_list = []
-        n = imgs.shape[0]
-        for i in range(n):
-            t_enc = self.time_mlp(t[i].unsqueeze(0))
-            feat_list.append(self.img_pool(self.encoder_img(imgs[i].unsqueeze(0), t_enc)[-1]))
-        features = torch.stack(feat_list, dim=1)
-        return self.temp_fusion(features)
+    jacobian = torch.stack([torch.stack(grad_k, dim=-1) for grad_k in grads], dim=-1)
+    # Add identity to convert ∂φ/∂x = I + ∂u/∂x
+    identity = torch.eye(3).to(displacement.device)
+    jacobian = jacobian + identity
+    det_j = torch.linalg.det(jacobian)
+    return det_j.unsqueeze(0)
 
 
 class ODEFunction(nn.Module):
@@ -198,10 +54,6 @@ class ODEFunction(nn.Module):
     def forward(self, t, phi_t):
         v = self.vnet(t, phi_t, self.imageA, self.imageB, self.ageA, self.ageB)
         return v
-
-
-import torch
-import torch.nn as nn
 
 
 class SinusoidalPositionEmbeddings(nn.Module):
@@ -558,7 +410,7 @@ class RegistrationLongitudinal(pl.LightningModule):
             if idx != 0:
                 self.seg_metrics(pred_label, F.one_hot(segs[:, idx].squeeze(0).cpu().long(),
                                                        num_classes=initial_seg.shape[1]).permute(0, 4, 1, 2, 3).cpu())
-                det_jac = Get_Ja(df.cpu()).numpy()
+                det_jac = compute_jacobian_determinant_3d(df.cpu()).numpy()
                 nb_jac_neg = int(np.sum(det_jac < 0))
                 buffer = self.seg_metrics.get_buffer()
                 dice = float(buffer[-1].mean().item())
@@ -663,7 +515,7 @@ class RegistrationLongitudinal(pl.LightningModule):
             if idx != 0:
                 self.seg_metrics(pred_label, F.one_hot(segs[:, idx].squeeze(0).cpu().long(),
                                                        num_classes=initial_seg.shape[1]).permute(0, 4, 1, 2, 3).cpu())
-                det_jac = Get_Ja(df.cpu()).numpy()
+                det_jac = compute_jacobian_determinant_3d(df.cpu()).numpy()
                 nb_jac_neg = 0
                 buffer = self.seg_metrics.get_buffer()
                 dice = float(buffer[-1].mean().item())
@@ -727,29 +579,3 @@ def wrong_age(age: torch.Tensor, gap: float) -> torch.Tensor:
 
     return wrong.view_as(age).to(age.dtype)
 
-def Get_Ja(displacement):
-    '''
-    Calculate the Jacobian value at each point of the displacement map having
-    size of b*h*w*d*3 and in the cubic volumn of [-1, 1]^3
-    '''
-    displacement = displacement.squeeze().permute(1, 2, 3, 0)
-    # check inputs
-    volshape = displacement.shape[:-1]
-    nb_dims = len(volshape)
-    assert len(volshape) in (2, 3), 'flow has to be 2D or 3D'
-    # compute grid
-    grid_lst = nd.volsize2ndgrid(volshape)
-    grid = np.stack(grid_lst, len(volshape))
-    # compute gradients
-    J = torch.gradient(displacement + torch.Tensor(grid).to(displacement.device))
-
-    dx = J[0]
-    dy = J[1]
-    dz = J[2]
-
-    # compute jacobian components
-    Jdet0 = dx[..., 0] * (dy[..., 1] * dz[..., 2] - dy[..., 2] * dz[..., 1])
-    Jdet1 = dx[..., 1] * (dy[..., 0] * dz[..., 2] - dy[..., 2] * dz[..., 0])
-    Jdet2 = dx[..., 2] * (dy[..., 0] * dz[..., 1] - dy[..., 1] * dz[..., 0])
-
-    return Jdet0 - Jdet1 + Jdet2

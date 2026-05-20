@@ -28,6 +28,12 @@ def main(args: Namespace) -> None:
     # --- Output directory ---
     dir_name: str = datetime.now().strftime("%y_%d_%H_%M")
     save_dir: str = os.path.join(args.save_dir, dir_name)
+    if os.path.exists(save_dir):
+        # create versioned directory if the base directory already exists
+        version = 1
+        while os.path.exists(f"{save_dir}_v{version}"):
+            version += 1
+        save_dir = f"{save_dir}_v{version}"
     os.makedirs(save_dir, exist_ok=True)
 
     # --- Logger ---
