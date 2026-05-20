@@ -271,10 +271,10 @@ class RegistrationLongitudinal(pl.LightningModule):
         self.registration = LongitudinalODERegistration(shape=shape)
         self.learning_rate = learning_rate
         self.save_dir = save_dir
-        self.loss_seg = monai.losses.DiceCELoss()
+        self.loss_seg = nn.MSELoss()
         self.loss = monai.losses.LocalNormalizedCrossCorrelationLoss(kernel_size=21)
         self.discrimation_loss = nn.BCEWithLogitsLoss()
-        self.loss_reg = monai.losses.BendingEnergyLoss(True)
+        self.loss_reg = Grad3d('l2')
         self.max_dice_score = 0
         self.automatic_optimization = False
         self.discriminator_step = False
@@ -347,7 +347,7 @@ class RegistrationLongitudinal(pl.LightningModule):
 
         self.log_dict({
             'loss_G': loss.item(),
-            'loss_sim': loss_sim.item(),
+            'loss_sim': (self.lambda_sim * loss_sim).item(),
             'loss_seg': (self.lambda_seg * loss_seg).item(),
             'loss_reg': (self.lambda_reg * loss_reg).item(),
             'loss_sdf': (self.lambda_sdf * loss_sdf).item(),
