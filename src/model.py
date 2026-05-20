@@ -264,7 +264,7 @@ class Discriminator(nn.Module):
 
 
 class RegistrationLongitudinal(pl.LightningModule):
-    def __init__(self, learning_rate=0.01, save_dir="", lambda_seg=1, lambda_reg=0.001, lambda_sdf=1, shape=[192, 224, 192], *args, **kwargs):
+    def __init__(self, learning_rate=0.01, save_dir="", lambda_seg=1, lambda_reg=0.001, lambda_sdf=1, lambda_sim=0.0, shape=[192, 224, 192], *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.save_hyperparameters()
         #self.discriminator = Discriminator(channels=32)
@@ -280,6 +280,7 @@ class RegistrationLongitudinal(pl.LightningModule):
         self.discriminator_step = False
         self.lambda_sdf = lambda_sdf
         self.lambda_reg = lambda_reg
+        self.lambda_sim = lambda_sim
         self.lambda_seg = lambda_seg
         self.seg_metrics = monai.metrics.DiceMetric()
         self.table_result_data = []
@@ -338,7 +339,7 @@ class RegistrationLongitudinal(pl.LightningModule):
         loss_reg /= max(count, 1)
         loss_sim /= max(count, 1)
         loss_sdf /= max(count, 1)
-        loss =  loss_sim + self.lambda_seg * loss_seg  + self.lambda_reg * loss_reg + self.lambda_sdf * loss_sdf
+        loss =  self.lambda_sim * loss_sim + self.lambda_seg * loss_seg  + self.lambda_reg * loss_reg + self.lambda_sdf * loss_sdf
         opt_G.zero_grad()
         #self.clip_gradients(opt_G, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
         self.manual_backward(loss)
@@ -349,6 +350,7 @@ class RegistrationLongitudinal(pl.LightningModule):
             'loss_sim': loss_sim.item(),
             'loss_seg': (self.lambda_seg * loss_seg).item(),
             'loss_reg': (self.lambda_reg * loss_reg).item(),
+            'loss_sdf': (self.lambda_sdf * loss_sdf).item(),
         }, on_step=True, on_epoch=True, prog_bar=True)
 
         # ── critical: free the ODE trajectory ──

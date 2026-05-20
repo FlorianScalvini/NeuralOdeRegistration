@@ -178,6 +178,12 @@ if __name__ == "__main__":
         help="Weight for the SDF loss term.",
     )
     parser.add_argument(
+        "--lambda_sim",
+        type=float,
+        default=0.0,
+        help="Weight for the similarity loss term.",
+    )
+    parser.add_argument(
         "--lambda_reg",
         type=float,
         default=0.3,
