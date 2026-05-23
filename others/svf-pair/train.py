@@ -1,29 +1,23 @@
 import argparse
-import gc
 import os
-from argparse import Namespace
-from datetime import datetime
-
-import pytorch_lightning as pl
+import gc
+import hydra
 import torch
-from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+import registration_svf
+from registration_svf.registration import RegistrationModule
+from omegaconf import DictConfig, OmegaConf
+from hydra.core.hydra_config import HydraConfig
+from datamodule import SpatioTemporalSequenceDatamoduleJSON
+from training_module import RegistrationTrainingModule
+from datetime import datetime
+gc.collect()
+torch.cuda.empty_cache()
+import registration_svf.modules.unet as unet
 
-from dataloader import SpatioTemporalSequenceDatamoduleJSON
-from model import RegistrationLongitudinal
-
-
-
-def main(args: Namespace) -> None:
-    """Build all components and launch training.
-
-    Parameters
-    ----------
-    args : Namespace
-        Parsed command-line arguments returned by :func:`parse_args`.
-    """
-    gc.collect()
-    torch.cuda.empty_cache()
-    torch.set_float32_matmul_precision("high")
+def main(args) -> None:
+    torch.set_float32_matmul_precision('high')
 
     # --- Output directory ---
     dir_name: str = datetime.now().strftime("%y_%d_%H_%M")
@@ -35,13 +29,19 @@ def main(args: Namespace) -> None:
             version += 1
         save_dir = f"{save_dir}_v{version}"
     os.makedirs(save_dir, exist_ok=True)
-
-    # --- Logger ---
     tensorboard_logger: pl.loggers.TensorBoardLogger = pl.loggers.TensorBoardLogger(
         save_dir=save_dir
     )
+    model = unet.DyNUnet(
+        in_channels=2,
+        out_channels=3,
+        kernel_size=[[3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3]],
+        strides=[[2, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2]],
+        dropout=0.1
+    )
+    model = RegistrationModule(model=model)
 
-    # --- Data module ---
+
     datamodule: pl.LightningDataModule = SpatioTemporalSequenceDatamoduleJSON(
         root_dir=args.root_dir,
         json_path=args.json_path,
@@ -49,45 +49,30 @@ def main(args: Namespace) -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         size=args.size,
-        crop=args.crop,
-        t0=args.t0,
-        tn=args.tn
+        crop=args.crop
     )
 
-    # --- Model ---
-    training_module: RegistrationLongitudinal = RegistrationLongitudinal(
-        learning_rate=args.learning_rate,
-        save_dir=save_dir,
-        lambda_seg=args.lambda_seg,
-        lambda_reg=args.lambda_reg,
-        lambda_sdf=args.lambda_sdf,
-        shape=args.size,
-    )
+    training_module = RegistrationTrainingModule(model=model,
+                                                 save_path=save_dir,
+                                                 learning_rate=args.learning_rate,
+                                                 lambda_sim=args.lambda_sim,
+                                                 lambda_reg=args.lambda_reg,
+                                                 lambda_seg=args.lambda_seg)
 
-    # --- Trainer ---
-    trainer: pl.Trainer = pl.Trainer(
-        max_epochs=args.max_epochs,
-        precision=args.precision,
-        num_sanity_val_steps=args.num_sanity_val_steps,
-        logger=tensorboard_logger,
-        callbacks=[
-            ModelCheckpoint(
-                every_n_train_steps=args.checkpoint_every_n_steps,
-                dirpath=save_dir,
-                save_last=True,
-            ),
-            TQDMProgressBar(refresh_rate=1),
-        ],
-        check_val_every_n_epoch=args.check_val_every_n_epoch,
-        enable_progress_bar=True,
-    )
-
-    trainer.fit(
-        model=training_module,
-        datamodule=datamodule,
-        ckpt_path=args.checkpoint,
-    )
-    # trainer.test(model=training_module, datamodule=datamodule, ckpt_path=args.checkpoint)
+    trainer = pl.Trainer(max_epochs=5000, precision=32, num_sanity_val_steps=30, logger=tensorboard_logger,
+                         callbacks= [ModelCheckpoint(every_n_train_steps=args.checkpoint_every_n_steps, dirpath=save_dir, save_last=True)],
+                         check_val_every_n_epoch=20, gradient_clip_algorithm='norm',
+                         enable_progress_bar=True)
+    
+    checkpoint = None
+    if args.checkpoint != "":
+        checkpoint = args.checkpoint
+    trainer.fit(model=training_module,
+                datamodule=datamodule,
+                ckpt_path=checkpoint)
+    print("Training finished")
+    print("Saving model")
+    training_module.save(save_dir)
 
 
 if __name__ == "__main__":
@@ -126,19 +111,7 @@ if __name__ == "__main__":
         help="Path to a checkpoint to resume training from (optional).",
     )
 
-    # --- Data ---
-    parser.add_argument(
-        "--t0",
-        type=int,
-        default=6,
-        help="Start gestational age (weeks).",
-    )
-    parser.add_argument(
-        "--tn",
-        type=int,
-        default=125,
-        help="End gestational age (weeks).",
-    )
+
     parser.add_argument(
         "--batch_size",
         type=int,
@@ -186,7 +159,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--lambda_reg",
         type=float,
-        default=0.05,
+        default=0.01,
         help="Weight for the regularisation loss term.",
     )
     parser.add_argument(
@@ -203,10 +176,10 @@ if __name__ == "__main__":
         help="Number of sanity validation steps before training starts.",
     )
     parser.add_argument(
-        "--check_val_every_n_epoch",
+        "--check_val_every_n_steps",
         type=int,
-        default=10,
-        help="Run validation every N epochs.",
+        default=100,
+        help="Run validation every N training steps.",
     )
     parser.add_argument(
         "--checkpoint_every_n_steps",

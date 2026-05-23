@@ -8,9 +8,11 @@ import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
 
-from dataloader import SpatioTemporalSequenceDatamoduleJSON
-from model import RegistrationLongitudinal
-
+from datamodule import SpatioTemporalSequenceDatamoduleJSON
+from training_module import LongitudinalTrainingModule
+from longitudinal_model import LongitudinalDeformation
+import registration_svf as svf
+import monai
 
 
 def main(args: Namespace) -> None:
@@ -41,7 +43,19 @@ def main(args: Namespace) -> None:
         save_dir=save_dir
     )
 
-    # --- Data module ---
+    model = svf.modules.unet.DyNUnet(
+        in_channels=2,
+        out_channels=3,
+        kernel_size=[[3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3]],
+        strides=[[2, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2]],
+        dropout=0.1
+    )
+    model = svf.registration.RegistrationModule(model=model)
+    model : LongitudinalDeformation = LongitudinalDeformation(svf_model=model, time_mode='linear', t0=args.t0, t1=args.tn)
+    training_module = LongitudinalTrainingModule(model=model,save_path=args.save_dir,  
+                                                 learning_rate_svf=args.learning_rate, 
+                                                 learning_rate_mlp=args.learning_rate, lambda_reg=args.lambda_reg, lambda_sim=args.lambda_sim, lambda_seg=args.lambda_seg)
+
     datamodule: pl.LightningDataModule = SpatioTemporalSequenceDatamoduleJSON(
         root_dir=args.root_dir,
         json_path=args.json_path,
@@ -54,21 +68,11 @@ def main(args: Namespace) -> None:
         tn=args.tn
     )
 
-    # --- Model ---
-    training_module: RegistrationLongitudinal = RegistrationLongitudinal(
-        learning_rate=args.learning_rate,
-        save_dir=save_dir,
-        lambda_seg=args.lambda_seg,
-        lambda_reg=args.lambda_reg,
-        lambda_sdf=args.lambda_sdf,
-        shape=args.size,
-    )
-
     # --- Trainer ---
     trainer: pl.Trainer = pl.Trainer(
         max_epochs=args.max_epochs,
         precision=args.precision,
-        num_sanity_val_steps=args.num_sanity_val_steps,
+        num_sanity_val_steps=0,
         logger=tensorboard_logger,
         callbacks=[
             ModelCheckpoint(

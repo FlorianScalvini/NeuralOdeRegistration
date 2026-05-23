@@ -5,7 +5,8 @@ import scipy.ndimage as ndi
 import numpy as np
 import glob
 
-list_seg = glob.glob("/home/florian/Documents/Dataset/dHCP/Atlas/parcellations/*.nii.gz")
+list_seg = glob.glob("/home/florian/Desktop/Calgary/*/*/parcellations/tissue.nii.gz")
+print(f"Found {len(list_seg)} segmentation files.")
 for path in list_seg:
     seg = tio.Subject(
         seg=tio.LabelMap(path)
@@ -18,7 +19,7 @@ for path in list_seg:
     print(f"Voxel spacing: {spacing} mm")
 
     # Create binary mask for class 2
-    class_2_mask = (seg_data == 4).astype(np.uint8) + (seg_data == 3).astype(np.uint8)
+    class_2_mask = (seg_data == 1).astype(np.uint8) 
 
     # Calculate signed distance transform in voxel units
     distance_outside = ndi.distance_transform_edt(1 - class_2_mask)

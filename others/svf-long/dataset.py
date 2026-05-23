@@ -163,7 +163,7 @@ class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
 
 
 class SpatioTemporalDatasetValidation(torch.utils.data.dataset.Dataset):
-    def __init__(self, data, transform=None, transform_seg=None):
+    def __init__(self, data, transform=None):
         '''
         PairwiseSubjectsDataset
         :param subjects: Sequence of subjects
@@ -171,15 +171,19 @@ class SpatioTemporalDatasetValidation(torch.utils.data.dataset.Dataset):
         '''
         super().__init__()
         self.transform = transform
-        self.transform_seg = transform_seg
-        self.data = data
+        self.discriminator_phase = False
+        self.multi_session = []
+        for i in range(len(data)):
+            if len(data[i]) > 1:
+                self.multi_session.append(data[i])
+            # IGNORE >3 (val)
+
 
     def __len__(self):
         '''
             Return the number of subjects in the dataset
         '''
-        
-        return len(self.data)
+        return len(self.multi_session)
 
     def get_subject_affine(self, idx: int) -> torch.Tensor:
         data = self.multi_session[idx]

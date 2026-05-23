@@ -267,13 +267,11 @@ class RegistrationLongitudinal(pl.LightningModule):
     def __init__(self, learning_rate=0.01, save_dir="", lambda_seg=1, lambda_reg=0.001, lambda_sdf=1, lambda_sim=0.0, shape=[192, 224, 192], *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.save_hyperparameters()
-        #self.discriminator = Discriminator(channels=32)
         self.registration = LongitudinalODERegistration(shape=shape)
         self.learning_rate = learning_rate
         self.save_dir = save_dir
         self.loss_seg = nn.MSELoss()
         self.loss = monai.losses.LocalNormalizedCrossCorrelationLoss(kernel_size=21)
-        self.discrimation_loss = nn.BCEWithLogitsLoss()
         self.loss_reg = Grad3d('l2')
         self.max_dice_score = 0
         self.automatic_optimization = False
@@ -351,7 +349,7 @@ class RegistrationLongitudinal(pl.LightningModule):
             'loss_seg': (self.lambda_seg * loss_seg).item(),
             'loss_reg': (self.lambda_reg * loss_reg).item(),
             'loss_sdf': (self.lambda_sdf * loss_sdf).item(),
-        }, on_step=True, on_epoch=True, prog_bar=True)
+        }, on_step=False, on_epoch=True, prog_bar=True)
 
         # ── critical: free the ODE trajectory ──
         del all_phi, all_phi_v, grid_voxel, loss, loss_sim, loss_reg, loss_sdf

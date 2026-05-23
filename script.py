@@ -90,7 +90,7 @@ for subject in data['subjects']:
     print(target_seg, pred_seg)
     if target_seg == pred_seg:
         continue
-    pred_seg = "/home/florian/Documents/Programs/longitudinal-svf/src/others/ants/temp/" + subject['subject_id'] + "_SyN_gs0.7_seg__Warped_label.nii.gz"
+    #pred_seg = "/home/florian/Documents/Programs/longitudinal-svf/src/others/ants/temp/" + subject['subject_id'] + "_SyN_gs0.7_seg__Warped_label.nii.gz"
     pred = tio.LabelMap(pred_seg)
     target = tio.LabelMap(target_seg)
     one_hot = tio.OneHot()

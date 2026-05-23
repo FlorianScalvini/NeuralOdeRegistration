@@ -81,7 +81,7 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
                 subject[j][2] = (subject[j][2] - t0) / (tn - t0)
             subject.sort(key=lambda x: x[2])
             self.data_val.append(subject)
-            
+
 
 
 
@@ -99,7 +99,7 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
         )
 
     def val_dataloader(self) -> torch.utils.data.DataLoader:
-        dataset = SpatioTemporalDatasetValidation(self.data_val, self.transform, self.transform_seg)
+        dataset = SpatioTemporalDatasetValidation(self.data_val, self.transform)
         return torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=1,

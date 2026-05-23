@@ -19,7 +19,7 @@ def split_and_shuffled(lst, ratio, seed=None):
 
 
 class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
-    def __init__(self, root_dir, json_path: str, json_path_val: str, batch_size: int, seed=42, num_workers=4, t0=0, tn=1, size=[192, 224, 192], crop=[50, 50, 50]):
+    def __init__(self, root_dir, json_path: str, json_path_val: str, batch_size: int, seed=42, num_workers=4, size=[192, 224, 192], crop=[50, 50, 50]):
         super().__init__()
         self.root_dir = root_dir
         self.json_path = json_path
@@ -54,15 +54,11 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
             for j in range(len(data['subjects'][i]['sessions'])):
                 session = [
                     root_dir + data['subjects'][i]['sessions'][j]['image'],
-                    root_dir + data['subjects'][i]['sessions'][j]['segmentation'],
-                    data['subjects'][i]['sessions'][j]['age']
+                    root_dir + data['subjects'][i]['sessions'][j]['segmentation']
                 ]
                 subject.append(session)
-
-            for j in range(len(subject)):
-                subject[j][2] = (subject[j][2] - t0) / (tn - t0)
-            subject.sort(key=lambda x: x[2])
             self.data_train.append(subject)
+
 
         with open(json_path_val, 'r') as f:
             # Parsing the JSON file into a Python dictionary
@@ -72,16 +68,12 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
             for j in range(len(data['subjects'][i]['sessions'])):
                 session = [
                     root_dir + data['subjects'][i]['sessions'][j]['image'],
-                    root_dir + data['subjects'][i]['sessions'][j]['segmentation'],
-                    data['subjects'][i]['sessions'][j]['age']
+                    root_dir + data['subjects'][i]['sessions'][j]['segmentation']
                 ]
                 subject.append(session)
-
-            for j in range(len(subject)):
-                subject[j][2] = (subject[j][2] - t0) / (tn - t0)
-            subject.sort(key=lambda x: x[2])
             self.data_val.append(subject)
-            
+
+
 
 
 
@@ -93,7 +85,7 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
             num_workers=1,             # ← Single worker
             shuffle=True,
             prefetch_factor=1,         # ← Only 1 batch ahead (your current setting)
-            pin_memory=True,
+            pin_memory= True,
             persistent_workers=False,
             drop_last=False,
         )
