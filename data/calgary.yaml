@@ -1,0 +1,14 @@
+name: 'calgary'
+root_dir: /home/florian/Documents/Dataset/Calgary/
+train_json: data_train.json
+val_json: data_val.json
+label_metadata: labels_metadata.json
+gi_normalized: null
+t0: 2.496714849
+tn: 124.2758979
+num_classes: 19
+date_format: null
+csize: [ 192, 224, 192 ]
+rsize: [ 192, 224, 192 ]
+
+
