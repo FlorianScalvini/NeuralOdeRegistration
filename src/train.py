@@ -29,6 +29,7 @@ import torch
 import yaml
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, TQDMProgressBar
+from pytorch_lightning.loggers import TensorBoardLogger
 
 # --- Local ---
 from pl_module import RegistrationLongitudinal
@@ -216,9 +217,7 @@ def main(args: Namespace) -> None:
     os.makedirs(save_dir, exist_ok=True)
 
     # --- Logger ---
-    tensorboard_logger: pl.loggers.TensorBoardLogger = pl.loggers.TensorBoardLogger(
-        save_dir=save_dir
-    )
+    tensorboard_logger: TensorBoardLogger = TensorBoardLogger(save_dir=save_dir)
 
     # --- Data module ---
     datamodule: pl.LightningDataModule = SpatioTemporalSequenceDatamoduleJSON(

@@ -22,7 +22,6 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
     def __init__(self, root_dir, json_path: str, json_path_val: str, batch_size: int, seed=42, num_workers=4, t0=0, tn=1, size=[192, 224, 192], crop=[50, 50, 50]):
         super().__init__()
         self.root_dir = root_dir
-
         self.json_path = os.path.join(root_dir, json_path)
         self.json_path_val = os.path.join(root_dir, json_path_val)
         self.batch_size = batch_size
@@ -31,18 +30,18 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
         self.seed = seed
         self.size = size
         self.crop = crop
-        self.transform = tio.Compose([
+        self.transform = tio.transforms.Compose([
 
-            tio.CropOrPad(crop),
-            tio.Resize(size),
-            tio.RescaleIntensity(out_min_max=(0,1), percentiles=(0.05,99.5)),
+            tio.transforms.CropOrPad(crop),
+            tio.transforms.Resize(size),
+             tio.transforms.RescaleIntensity(out_min_max=(0,1), percentiles=(0.05,99.5)),
         ])
 
         
-        self.transform_seg = tio.Compose([
+        self.transform_seg = tio.transforms.Compose([
 
-            tio.CropOrPad(crop),
-            tio.Resize(size),
+            tio.transforms.CropOrPad(crop),
+            tio.transforms.Resize(size),
         ])
         self.data_train = []
         self.data_val = []

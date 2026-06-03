@@ -44,7 +44,7 @@ import seaborn as sns
 import torchio as tio
 import matplotlib.pyplot as plt
 from PIL import Image
-from monai.metrics import DiceMetric
+from monai.metrics import DiceMetric # type: ignore
 from matplotlib.colors import ListedColormap, Normalize
 
 # --- Local ---
@@ -216,7 +216,7 @@ def segmentation_map_slice_with_color_map(img: np.ndarray, rotate: int = 90) -> 
     """Render a label-map slice with the tab20 colormap and rotate for display."""
     cmap = plt.colormaps.get_cmap('tab20')
     cmap_r = cmap.reversed()
-    colors = cmap_r.colors
+    colors = cmap_r.colors # type: ignore
     colors = [(0,0,0,0)] + list(colors)
     cmap_r = ListedColormap(colors, name='new_tab21')
     img = cmap_r(img % 21)[:, :, :3]  # keep RGB, drop alpha
@@ -260,7 +260,7 @@ def crop_from_segmentation_mask_with_ratio(
 
     # If mask is empty, return original
     if len(xs) == 0 or len(ys) == 0:
-        return img.copy(), mask.copy()
+        return img.copy(), mask.copy() # type: ignore
 
     # --- Minimal bounding box ---
 
@@ -481,7 +481,7 @@ def compute_evaluation(
                 for c in cortex_labels:
                     cortex_values.append(float(per_label[c]))
                 cortex_dice = float(np.mean(cortex_values))
-                row = [lst_data_gt[i][0], mdice, cortex_dice] + [float(per_label[c]) for c in range(per_label.shape[0])]
+                row = [lst_data_gt[i][0], mdice, cortex_dice] + [float(per_label[c]) for c in range(per_label.shape[0])] # type: ignore
                 writer.writerow(row)
                 processed_rows += 1
                 error_map = (pred_1h != gt_1h).float()

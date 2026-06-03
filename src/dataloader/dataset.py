@@ -9,7 +9,7 @@ import pandas as pd
 import json
 from torchio import transforms
 
-class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
+class SpatioTemporalDataset(torch.utils.data.dataset.Dataset): # type: ignore
     def __init__(self, data, transform=None, transform_seg=None):
         '''
         PairwiseSubjectsDataset
@@ -31,7 +31,7 @@ class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
         return len(self.data)
 
 
-    def __getitem__(self, idx: int) -> tio.Subject:
+    def __getitem__(self, idx: int):
         '''
             Get the sequence at index idx
             :param idx: index of the sequence
@@ -48,10 +48,10 @@ class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
                 sdf=tio.ScalarImage(data[i][1].replace("tissue", "sdf_cortex"))
             )
             if self.transform is not None:
-                session.image = self.transform(session.image)
+                session['image'] = self.transform(session['image'])
             if self.transform_seg is not None:
-                session.label = self.transform_seg(session.label)
-                session.sdf = self.transform_seg(session.sdf)
+                session['label'] = self.transform_seg(session['label'])
+                session['sdf'] = self.transform_seg(session['sdf'])
 
             mri_stack.append(session.image.data)
             sdf_stack.append(session.sdf.data)
@@ -83,7 +83,7 @@ class SpatioTemporalDataset(torch.utils.data.dataset.Dataset):
 
 
 
-class SpatioTemporalDatasetValidation(torch.utils.data.dataset.Dataset):
+class SpatioTemporalDatasetValidation(torch.utils.data.dataset.Dataset): # type: ignore
     def __init__(self, data, transform=None, transform_seg=None, reverse_transform=None):
         '''
         PairwiseSubjectsDataset
@@ -106,7 +106,7 @@ class SpatioTemporalDatasetValidation(torch.utils.data.dataset.Dataset):
     def get_reverse_transform(self) -> transforms.Transform | None:
         return self.reverse_transform
     
-    def get_subject(self, idx: int) -> torch.Tensor:
+    def get_subject(self, idx: int) -> tio.Subject:
         data = self.data[idx]
         session = tio.Subject(
             image=tio.ScalarImage(data[0][0]),
@@ -114,7 +114,7 @@ class SpatioTemporalDatasetValidation(torch.utils.data.dataset.Dataset):
         )
         return session
 
-    def __getitem__(self, idx: int) -> tio.Subject:
+    def __getitem__(self, idx: int):
         '''
             Get the sequence at index idx
             :param idx: index of the sequence

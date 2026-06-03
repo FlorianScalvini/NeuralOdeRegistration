@@ -98,7 +98,7 @@ def main(args: Namespace) -> None:
                                   compute_flow=True, 
                                   compute_gi=True, 
                                   create_img_slice=False, 
-                                  plane=0, 
+                                  plane_idx=0, 
                                   gi_normalized_csv=config['gi_normalized'], 
                                   rotate=args.rotate)
     

@@ -358,7 +358,7 @@ class UnetUpBlock(nn.Module):
         super().__init__()
         padding = kernel_size // 2 if isinstance(kernel_size, int) else [k // 2 for k in kernel_size]
         self.upsample = nn.Sequential(
-            Conv3dReLU(in_channels, out_channels, kernel_size=kernel_size, stride=1, padding=padding),
+            Conv3dReLU(in_channels, out_channels, kernel_size=kernel_size, stride=1, padding=padding),  # type: ignore
             nn.Upsample(scale_factor=2.0, mode="trilinear", align_corners=True),
         )
         self.conv_block = Conv3dReLU(out_channels * 2, out_channels, kernel_size=1)
@@ -432,7 +432,7 @@ class Conv3dReLU(nn.Sequential):
         stride: int = 1,
     ) -> None:
         super().__init__()
-        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, bias=False)
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, bias=False) # type: ignore
         self.nm = nn.InstanceNorm3d(out_channels)
         self.relu = nn.LeakyReLU(inplace=False)
 

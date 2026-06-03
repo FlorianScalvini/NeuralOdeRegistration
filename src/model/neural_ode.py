@@ -81,7 +81,7 @@ class LongitudinalODERegistration(nn.Module):
         imageB: torch.Tensor,
         ages: torch.Tensor,
         grid: torch.Tensor,
-        loss_v: nn.Module = monai.losses.DiffusionLoss(normalize=True),
+        loss_v: nn.Module = monai.losses.DiffusionLoss(normalize=True), # type: ignore
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Integrate the velocity field over *ages* and return deformation trajectories.
 
@@ -162,7 +162,7 @@ class ODEFunction(nn.Module):
         imageB: torch.Tensor,
         ageA: torch.Tensor,
         ageB: torch.Tensor,
-        loss_v: nn.Module = monai.losses.DiffusionLoss(normalize=True),
+        loss_v: nn.Module = monai.losses.DiffusionLoss(normalize=True), # type: ignore
     ) -> None:
         super().__init__()
         self.vnet = vnet

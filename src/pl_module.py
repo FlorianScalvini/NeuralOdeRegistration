@@ -65,13 +65,13 @@ class RegistrationLongitudinal(pl.LightningModule):
         self.lambda_jac = lambda_jac
 
         # Loss functions and metrics
-        self.loss_sim = monai.losses.LocalNormalizedCrossCorrelationLoss(kernel_size=21)
+        self.loss_sim = monai.losses.LocalNormalizedCrossCorrelationLoss(kernel_size=21) # type: ignore
         self.loss_reg = losses.Grad3d('l2')
         self.loss_sdf = nn.L1Loss()
         self.loss_seg = nn.MSELoss()
         self.loss_jac = losses.NonDetJacobianPenalty()
 
-        self.seg_metrics = monai.metrics.DiceMetric()
+        self.seg_metrics = monai.metrics.DiceMetric() # type: ignore
 
         # Logging and tracking best performance
         self.save_dir = save_dir
@@ -155,9 +155,9 @@ class RegistrationLongitudinal(pl.LightningModule):
         loss_jac = loss_jac / num_steps
         loss_reg = loss_reg / (ages[-1] - ages[0] // self.model.step_time) # Normalize by number of integration steps, not number of images
         loss =  self.lambda_sim * loss_sim + self.lambda_seg * loss_seg  + self.lambda_reg * loss_reg + self.lambda_sdf * loss_sdf + self.lambda_jac * loss_jac
-        optimizer.zero_grad()
+        optimizer.zero_grad() # type: ignore
         self.manual_backward(loss)
-        optimizer.step()
+        optimizer.step() # type: ignore
 
         self.log_dict({
             'loss_G': loss.item(),
@@ -267,11 +267,11 @@ class RegistrationLongitudinal(pl.LightningModule):
 
         # Log temporal comparison grids
         for i, img in enumerate(self.val_grid_images):
-            self.logger.experiment.add_image(
+            self.logger.experiment.add_image( # type: ignore
                 f"Temporal_Comparison/batch_{i}",
                 img,
                 global_step=step
-            )
+            ) 
 
         # Log grid images + scalars as a combined image panel
         grid_imgs = [row[1] for row in self.table_result_data]  # tensors (3,H,W)
@@ -280,22 +280,22 @@ class RegistrationLongitudinal(pl.LightningModule):
 
         if grid_imgs:
             grid_panel = make_grid(torch.stack(grid_imgs), nrow=len(grid_imgs), padding=2, pad_value=1.0)
-            self.logger.experiment.add_image("Grid/all", grid_panel, global_step=step)
+            self.logger.experiment.add_image("Grid/all", grid_panel, global_step=step) # type: ignore
 
         # Log per-sample scalars
         for row in self.table_result_data:
             sample_id, _, dice, nb_jac_neg = row
-            self.logger.experiment.add_scalar(f"Dice/{sample_id}", dice, global_step=step)
-            self.logger.experiment.add_scalar(f"JacNeg/{sample_id}", nb_jac_neg, global_step=step)
+            self.logger.experiment.add_scalar(f"Dice/{sample_id}", dice, global_step=step) # type: ignore
+            self.logger.experiment.add_scalar(f"JacNeg/{sample_id}", nb_jac_neg, global_step=step) # type: ignore
 
         mean_dice = float(np.mean(dice_vals))
         # Log mean dice and jac
         self.log("Val/mean_dice", mean_dice, on_step=False, on_epoch=True, prog_bar=True)
         self.log("Val/mean_jac_neg", float(np.mean(jac_vals)), on_step=False, on_epoch=True, prog_bar=True)
 
-        self.logger.experiment.add_scalar("Val/mean_dice", mean_dice, global_step=step)
-        self.logger.experiment.add_scalar("Val/mean_jac_neg", float(np.mean(jac_vals)), global_step=step)
-
+        self.logger.experiment.add_scalar("Val/mean_dice", mean_dice, global_step=step) # type: ignore
+        self.logger.experiment.add_scalar("Val/mean_jac_neg", float(np.mean(jac_vals)), global_step=step) # type: ignore
+ 
         # Reset
         self.table_result_data = []
         self.val_grid_images = []
@@ -333,7 +333,7 @@ class RegistrationLongitudinal(pl.LightningModule):
             all_phi, _ = self(initial_img, target_img, ages, grid)
         all_phi = all_phi.detach()
         grid_voxel = (grid + 1.) / 2. * scale_factor
-        subject = self.trainer.test_dataloaders.dataset.get_subject(batch_idx)
+        subject = self.trainer.test_dataloaders.dataset.get_subject(batch_idx) # type: ignore
         affine = subject.image.affine
         reverse_transform = tio.transforms.CropOrPad(subject.image.shape[1:])
         initial_seg = F.one_hot(segs[:, 0].squeeze(0).cpu().long(), num_classes=-1).permute(0, 4, 1, 2, 3)
