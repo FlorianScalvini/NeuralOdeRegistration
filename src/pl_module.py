@@ -1,6 +1,7 @@
 # --- Standard library ---
 import os
 import json
+import random
 
 # --- Third-party ---
 import numpy as np
@@ -88,12 +89,13 @@ class RegistrationLongitudinal(pl.LightningModule):
         source: torch.Tensor,
         target: torch.Tensor,
         ages: torch.Tensor,
+        target_age: torch.Tensor,
         grid: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the ODE registration and rescale deformation fields to voxel space."""
         shape = source.shape[2:]
         scale_factor = torch.tensor(shape).to(self.device).view(1, 3, 1, 1, 1) * 1.
-        all_phi, loss_reg = self.model(source, target, ages, grid)
+        all_phi, loss_reg = self.model(source, target, ages, target_age, grid)
         all_phi = (all_phi + 1.) / 2. * scale_factor
         return all_phi, loss_reg
 
@@ -125,12 +127,12 @@ class RegistrationLongitudinal(pl.LightningModule):
         loss_sdf = torch.tensor(0.0, device=self.device)
         loss_jac = torch.tensor(0.0, device=self.device)
 
-        target_img = images[-1:].float()
+        
         initial_img = images[0:1].float()
-        initial_sdf = sdf[0:1].float()
-
+        target_img = images[-1:].float()
         initial_seg = F.one_hot(segs[:, 0].squeeze(0).cpu().long(), num_classes=-1).permute(0, 4, 1, 2, 3)
-        all_phi, loss_reg = self(initial_img, target_img, ages, grid)
+        all_phi, loss_reg = self(initial_img, target_img, ages, ages[-1], grid)
+        
         grid_voxel = (grid + 1.) / 2. * scale_factor
 
         for idx in range(1, images.shape[0]):
@@ -153,7 +155,7 @@ class RegistrationLongitudinal(pl.LightningModule):
         loss_sim = loss_sim / num_steps
         loss_sdf = loss_sdf / num_steps
         loss_jac = loss_jac / num_steps
-        loss_reg = loss_reg / (ages[-1] - ages[0] // self.model.step_time) # Normalize by number of integration steps, not number of images
+        loss_reg = loss_reg / ((ages[-1] - ages[0]) / self.model.step_time) # Normalize by number of integration steps, not number of images
         loss =  self.lambda_sim * loss_sim + self.lambda_seg * loss_seg  + self.lambda_reg * loss_reg + self.lambda_sdf * loss_sdf + self.lambda_jac * loss_jac
         optimizer.zero_grad() # type: ignore
         self.manual_backward(loss)
@@ -204,7 +206,7 @@ class RegistrationLongitudinal(pl.LightningModule):
         initial_img = images[0:1].float()
         target_img = images[-1:].float()
         with torch.no_grad():
-            all_phi, _ = self(initial_img, target_img, ages, grid)
+            all_phi, _ = self(initial_img, target_img, ages, ages[-1], grid)
         all_phi = all_phi.detach()
         grid_voxel = (grid + 1.) / 2. * scale_factor
         all_registered = []
@@ -330,7 +332,7 @@ class RegistrationLongitudinal(pl.LightningModule):
         target_img = images[-1:].float()
         dices_subjects = []
         with torch.no_grad():
-            all_phi, _ = self(initial_img, target_img, ages, grid)
+            all_phi, _ = self(initial_img, target_img, ages, ages[-1], grid)
         all_phi = all_phi.detach()
         grid_voxel = (grid + 1.) / 2. * scale_factor
         subject = self.trainer.test_dataloaders.dataset.get_subject(batch_idx) # type: ignore

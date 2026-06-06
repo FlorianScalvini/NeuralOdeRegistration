@@ -80,6 +80,7 @@ class LongitudinalODERegistration(nn.Module):
         imageA: torch.Tensor,
         imageB: torch.Tensor,
         ages: torch.Tensor,
+        ages_target: torch.Tensor,
         grid: torch.Tensor,
         loss_v: nn.Module = monai.losses.DiffusionLoss(normalize=True), # type: ignore
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -111,7 +112,7 @@ class LongitudinalODERegistration(nn.Module):
             time step (scalar).
         """
         ode_func = ODEFunction(
-            self.velocity_net, imageA, imageB, ages[0], ages[-1], loss_v=loss_v
+            self.velocity_net, imageA, imageB, ages[0], ages_target, loss_v=loss_v
         )
         phi_traj, loss_reg_traj = odeint(
             ode_func,
