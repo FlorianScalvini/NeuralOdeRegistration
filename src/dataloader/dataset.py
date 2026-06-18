@@ -121,7 +121,6 @@ class SpatioTemporalDataset(torch.utils.data.Dataset):
         sdf_stack_out = torch.stack(sdf_stack, dim=0)  # (T_total, 1, X, Y, Z)
         seg_stack_out = torch.stack(seg_stack, dim=0)  # (T_total, 1, X, Y, Z)
         time_stack_out = torch.tensor(time_stack, dtype=torch.float)  # (T_total,)
-
         return mri_stack_out, seg_stack_out, time_stack_out, sdf_stack_out
 
 

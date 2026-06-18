@@ -155,7 +155,7 @@ class RegistrationLongitudinal(pl.LightningModule):
         loss_sim = loss_sim / num_steps
         loss_sdf = loss_sdf / num_steps
         loss_jac = loss_jac / num_steps
-        loss_reg = loss_reg / ((ages[-1] - ages[0]) / self.model.step_time) # Normalize by number of integration steps, not number of images
+        loss_reg = loss_reg / torch.abs(ages[-1] - ages[0]) # Normalize by number of integration steps, not number of images
         loss =  self.lambda_sim * loss_sim + self.lambda_seg * loss_seg  + self.lambda_reg * loss_reg + self.lambda_sdf * loss_sdf + self.lambda_jac * loss_jac
         optimizer.zero_grad() # type: ignore
         self.manual_backward(loss)
@@ -349,7 +349,7 @@ class RegistrationLongitudinal(pl.LightningModule):
             image.affine = affine
             image.save(os.path.join(self.save_dir, "images", f"subject_{batch_idx}_time_{idx:03d}.nii.gz"))
 
-            parcellation = reverse_transform(tio.LabelMap(tensor=warped_seg.cpu().squeeze(0).float()))
+            parcellation = reverse_transform(tio.LabelMap(tensor=warped_seg.cpu().float()))
             parcellation.affine = affine
             parcellation.save(os.path.join(self.save_dir, "parcellations", f"subject_{batch_idx}_time_{idx:03d}_seg.nii.gz"))
 
@@ -359,18 +359,16 @@ class RegistrationLongitudinal(pl.LightningModule):
 
             if idx != 0:
                 pred_label = F.one_hot(warped_seg.cpu().long(), num_classes=initial_seg.shape[1]).permute(0, 4, 1, 2, 3)
-                dices_subjects.append(np.mean(self.seg_metrics(pred_label, F.one_hot(segs[:, idx].squeeze(0).cpu().long(),
-                                                                             num_classes=initial_seg.shape[1]).permute(0, 4, 1, 2, 3).cpu())))
-            print(f"Subject {batch_idx} : mean dice {np.mean(dices_subjects)}")
-            del warped, warped_seg, phi, pred_label
+                gt = F.one_hot(segs[:, idx].squeeze(0).cpu().long(), num_classes=-1).permute(0, 4, 1, 2, 3).cpu()
+                dices_subjects.append(np.mean(self.seg_metrics(pred_label, gt.cpu()).numpy()))
+            del warped, warped_seg, phi
             torch.cuda.empty_cache()
-
+        print(f"Subject {batch_idx} : mean dice {np.mean(dices_subjects)}")
         del all_phi, df
         torch.cuda.empty_cache()
 
     def on_test_epoch_end(self) -> None:
         """Print final evaluation metrics and save the last model checkpoint."""
         print("Test epoch ended. Computing evaluation metrics...")
-        print("Average Dice scores:", self.seg_metrics.compute())
         torch.save(self.model.state_dict(), os.path.join(self.save_dir, "saved_model.pt"))
         torch.cuda.empty_cache()

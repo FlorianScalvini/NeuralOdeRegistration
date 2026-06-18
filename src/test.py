@@ -62,19 +62,18 @@ def main(args: Namespace) -> None:
         root_dir=config["root_dir"],
         json_path=config["train_json"],
         json_path_val=config["val_json"],
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        size=config["csize"],
-        crop=config["rsize"],
+        batch_size=1,
+        num_workers=1,
+        size=config["rsize"],
+        crop=config["csize"],
         t0=config["t0"],
         tn=config["tn"],
     )
 
     # --- Model ---
     training_module: RegistrationLongitudinal = RegistrationLongitudinal(
-        learning_rate=args.learning_rate,
         save_dir=save_dir,
-        shape=args.size,
+        shape=config["rsize"],
         step_time=0.1
     )
 
@@ -91,8 +90,8 @@ def main(args: Namespace) -> None:
     # Evaluate predictions based on the evaluation metrics (e.g. the Dice score for segmentation, the number of non-positive Jacobian determinants for deformation regularity, etc.) and save the results in the output directory.
 
     # Duplicate 
-    evaluation.compute_evaluation(dataset_yaml=args.dataset_yaml, 
-                                  pred_path=os.path.join(save_dir, "predictions"),
+    evaluation.compute_evaluation(dataset_yaml=args.dataset, 
+                                  pred_path="/home/florian/PyCharmMiscProject/results/dhcpatlas/test/26_08_10_45/parcellations",
                                   compute_dice=True, 
                                   create_vtk=True, 
                                   compute_flow=True, 
@@ -100,7 +99,7 @@ def main(args: Namespace) -> None:
                                   create_img_slice=False, 
                                   plane_idx=0, 
                                   gi_normalized_csv=config['gi_normalized'], 
-                                  rotate=args.rotate)
+                                  rotate=0)
     
 
 if __name__ == "__main__":
@@ -111,14 +110,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
-        default="/home/florian/PyCharmMiscProject/data/macaque.yaml",
+        default="/home/florian/PyCharmMiscProject/data/dhcpatlas.yaml",
         help="Path to the dataset configuration file.",
     )
     
     parser.add_argument(
         "--weight_path",
         type=str,
-        default=None,
+        default="/home/florian/PyCharmMiscProject/results/dhcpatlas/train/26_07_15_55_v1/last_registration.pt",
         help="Path to the weight file for testing.",
     )
   

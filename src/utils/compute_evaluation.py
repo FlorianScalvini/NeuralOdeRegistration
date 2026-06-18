@@ -48,8 +48,8 @@ from monai.metrics import DiceMetric # type: ignore
 from matplotlib.colors import ListedColormap, Normalize
 
 # --- Local ---
-import visualize as visualize
-import registration as registration
+import utils.visualize as visualize
+import utils.registration as registration
 from .nifti_to_vtk import convert_nifti_labels_union_to_vtk
 from .gyrification_index import rescale_initial_smooth_mesh_to_folded_mesh, compute_gyrification_index
 
@@ -382,10 +382,8 @@ def compute_evaluation(
     with open(dataset_yaml, "r") as f:
         config = yaml.safe_load(f)
     name_dataset = config["name"]
-    rsize = config['rsize']
-    csize = config['csize']
-    t0 = config['t0']
-    t1 = config['t1']
+
+
 
     num_classes = config['num_classes']
     csv_path = config['csv_path']
@@ -634,8 +632,8 @@ def compute_evaluation(
                 GI = compute_gyrification_index(rescaled_initial_smooth_mesh, folded_mesh)
                 row = [lst_data_gt[i][0]]
                 row.append(GI)
-                if args.gi_normalized != "":
-                    data = pd.read_csv(args.gi_normalized, sep=" ")
+                if gi_normalized_csv != "":
+                    data = pd.read_csv(gi_normalized_csv, sep=" ")
                     gi_gt = data[data['time'] == lst_data_gt[i][0]].values[0][1]
                     row.append(GI / gi_gt)
                 writer.writerow(row)

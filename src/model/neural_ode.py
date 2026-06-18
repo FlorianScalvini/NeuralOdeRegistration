@@ -201,7 +201,8 @@ class ODEFunction(nn.Module):
         phi_t = state[0]
         v = self.vnet(t, phi_t, self.imageA, self.imageB, self.ageA, self.ageB)
         loss_v: torch.Tensor = self.loss(v)
-        return v, loss_v
+        direction = torch.sign(self.ageB - self.ageA)
+        return v, loss_v * direction
 
 
 # ──────────────────────────────────────────────────────────────────────────────

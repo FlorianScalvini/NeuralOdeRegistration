@@ -94,7 +94,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--dataset",
         type=str,
-        default="/home/florian/PyCharmMiscProject/data/macaque.yaml",
+        default="/home/florian/PyCharmMiscProject/data/babofet.yaml",
         help="Path to the dataset configuration file.",
     )
     parser.add_argument(
@@ -134,7 +134,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--lambda_seg",
         type=float,
-        default=1.0,
+        default=10.0,
         help="Weight for the segmentation loss term.",
     )
     parser.add_argument(
@@ -146,19 +146,19 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--lambda_sim",
         type=float,
-        default=0.0,
+        default=1.0,
         help="Weight for the image-similarity loss term.",
     )
     parser.add_argument(
         "--lambda_reg",
         type=float,
-        default=10,
+        default=100,
         help="Weight for the regularisation loss term.",
     )
     parser.add_argument(
         "--lambda_jac",
         type=float,
-        default=0.000001,
+        default=0.00001,
         help="Weight for the Jacobian-determinant loss term.",
     )
     parser.add_argument(
@@ -177,7 +177,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--check_val_every_n_epoch",
         type=int,
-        default=100,
+        default=20,
         help="Run validation every N epochs.",
     )
     parser.add_argument(
@@ -226,8 +226,8 @@ def main(args: Namespace) -> None:
         json_path_val=config["val_json"],
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        size=config["csize"],
-        crop=config["rsize"],
+        size=config["rsize"],
+        crop=config["csize"],
         t0=config["t0"],
         tn=config["tn"],
     )
@@ -262,6 +262,7 @@ def main(args: Namespace) -> None:
         check_val_every_n_epoch=args.check_val_every_n_epoch,
         enable_progress_bar=True,
     )
+    training_module.model.load_state_dict(torch.load("/home/florian/PyCharmMiscProject/results/babofet/train/26_12_12_04/best_registration.pt")) 
     trainer.fit(model=training_module, datamodule=datamodule, ckpt_path=args.checkpoint)
 
 
