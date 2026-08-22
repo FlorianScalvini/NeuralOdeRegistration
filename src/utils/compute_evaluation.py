@@ -13,6 +13,8 @@ displacement flow fields), this module computes and saves:
   predicted parcellations for 3-D visualisation.
 * **Gyrification Index (GI)** – computed by rescaling an initial smooth mesh
   onto each folded predicted mesh and comparing areas.
+* **Surface agreement** – ASSD/HD95/Hausdorff for spatial alignment and
+  closest-triangle mean-curvature statistics for local folding similarity.
 
 All results are written to a timestamped output directory alongside CSV
 summary files that can be consumed downstream for plotting and statistics.
@@ -30,8 +32,8 @@ import os
 import csv
 import json
 import glob
-import shutil
 import argparse
+import tempfile
 from pathlib import Path
 
 # --- Third-party ---
@@ -43,6 +45,7 @@ import pandas as pd
 import seaborn as sns
 import torchio as tio
 import matplotlib.pyplot as plt
+import vtk
 from PIL import Image
 from monai.metrics import DiceMetric # type: ignore
 from matplotlib.colors import ListedColormap, Normalize
@@ -52,6 +55,7 @@ import utils.visualize as visualize
 import utils.registration as registration
 from .nifti_to_vtk import convert_nifti_labels_union_to_vtk
 from .gyrification_index import rescale_initial_smooth_mesh_to_folded_mesh, compute_gyrification_index
+from metrics.mesh_comparison import compare_meshes
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -75,6 +79,42 @@ def read_parcellations(path: str, num_classes: int) -> torch.Tensor:
     print(label.data.shape)
     # --- One-hot encoding ---
     return to_onehot(label).data
+
+
+def read_vtk_dataset(path: str) -> vtk.vtkDataSet:
+    """Read legacy VTK polydata or unstructured grids."""
+    reader = vtk.vtkGenericDataObjectReader()
+    reader.SetFileName(path)
+    reader.Update()
+    output = reader.GetOutput()
+    if not isinstance(output, vtk.vtkDataSet) or output.GetNumberOfPoints() == 0:
+        raise ValueError(f"VTK file contains no dataset points: {path}")
+    return output
+
+
+def create_cortex_surface(
+    segmentation_path: str,
+    output_path: str,
+    cortex_labels: list[int],
+) -> str:
+    """Create one cortex VTK, handling one-hot NIfTI segmentations safely."""
+    image = tio.ScalarImage(segmentation_path)
+    source_path = segmentation_path
+    with tempfile.TemporaryDirectory(prefix="surface_eval_") as temporary_dir:
+        if image.data.shape[0] != 1:
+            labels = torch.argmax(image.data, dim=0).unsqueeze(0)
+            temporary_path = os.path.join(temporary_dir, "labels.nii.gz")
+            tio.LabelMap(tensor=labels.int(), affine=image.affine).save(temporary_path)
+            source_path = temporary_path
+        convert_nifti_labels_union_to_vtk(source_path, cortex_labels, output_path)
+    return output_path
+
+
+def corresponding_surface_path(segmentation_path: str) -> str:
+    """Return the conventional ``*_surface.vtk`` path beside a NIfTI label map."""
+    path = Path(segmentation_path)
+    name = path.name[:-7] if path.name.endswith(".nii.gz") else path.stem
+    return str(path.with_name(f"{name}_surface.vtk"))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -376,6 +416,8 @@ def compute_evaluation(
     plane_idx: int = 0,
     gi_normalized_csv: str | None = None,
     rotate: int = 90,
+    compute_surface_metrics: bool = False,
+    surface_dice_tolerance: float = 1.0,
 ) -> None:
     """Run the full evaluation suite and write CSV results and image exports to disk."""
     ratio = 0.9
@@ -404,7 +446,10 @@ def compute_evaluation(
         parentPath = f"{parentPath}_v{version}"
     os.makedirs(parentPath, exist_ok=True)
     preds_parcellations = glob.glob(os.path.join(pred_path, "parcellations", "*.nii*"))
-    preds_images = glob.glob(os.path.join(pred_path, "images","*.nii*"))
+    preds_images = [
+        path for path in glob.glob(os.path.join(pred_path, "images", "*.nii*"))
+        if "_model_grid.nii" not in path
+    ]
     preds_flows = glob.glob(os.path.join(pred_path, "flows", "*.nii*"))
     preds_images.sort()
     preds_flows.sort()
@@ -596,22 +641,51 @@ def compute_evaluation(
             fig.colorbar(im, ax=axs, orientation='vertical', fraction=0.02)
             plt.savefig(os.path.join(image_save_path, f'jacobian_all.png'), bbox_inches='tight')
 
-    # Step 1: Create vtk files for cortex labels
-    if not create_vtk:
-        vtk_path = os.path.join(pred_path, "vtk")
+    # Build predicted surfaces once and reuse them for surface metrics and GI.
+    vtk_path = os.path.join(pred_path, "vtk")
+    predicted_vtk_files = [
+        p_seg.replace('parcellations', 'vtk').replace('nii.gz', 'vtk')
+        for p_seg in preds_parcellations
+    ]
+    if not create_vtk or compute_surface_metrics or not compute_gi:
         os.makedirs(vtk_path, exist_ok=True)
-        for p_seg in preds_parcellations:
-            img = tio.ScalarImage(p_seg)
-            output_path = p_seg.replace('parcellations', 'vtk').replace('nii.gz', 'vtk')
-            if img.data.shape[0] != 1:
-                os.makedirs("./temp/", exist_ok=True)
-                img_tensor = torch.argmax(img.data, dim=0).unsqueeze(0)
-                img = tio.LabelMap(tensor=img_tensor.int(), affine=img.affine)
-                img.save('./temp/img.nii.gz')
-                p_seg = './temp/img.nii.gz'
-            convert_nifti_labels_union_to_vtk(p_seg, cortex_labels, output_path)
-        if os.path.exists("./temp/"):
-            shutil.rmtree("./temp/")
+        for segmentation, output_path in zip(preds_parcellations, predicted_vtk_files):
+            if not os.path.isfile(output_path):
+                create_cortex_surface(segmentation, output_path, cortex_labels)
+
+    if compute_surface_metrics:
+        metrics_path = os.path.join(parentPath, "surface_metrics.csv")
+        ground_truth_vtk_dir = os.path.join(parentPath, "ground_truth_vtk")
+        os.makedirs(ground_truth_vtk_dir, exist_ok=True)
+        metric_names = [
+            "surface_dice", "assd", "rms_surface_distance", "hd95", "hausdorff",
+            "curvature_mae", "curvature_rmse", "curvature_bias",
+            "curvature_pearson", "curvature_spearman",
+            "absolute_curvature_pearson",
+        ]
+        with open(metrics_path, mode="w", newline="") as stream:
+            writer = csv.writer(stream, delimiter=" ")
+            writer.writerow(["time", "surface_dice_tolerance_mm", *metric_names])
+            for index, predicted_vtk in enumerate(predicted_vtk_files):
+                ground_truth_segmentation = lst_data_gt[index][2]
+                ground_truth_vtk = corresponding_surface_path(ground_truth_segmentation)
+                if not os.path.isfile(ground_truth_vtk):
+                    ground_truth_vtk = os.path.join(
+                        ground_truth_vtk_dir, f"ground_truth_{index:03d}.vtk"
+                    )
+                    if not os.path.isfile(ground_truth_vtk):
+                        create_cortex_surface(
+                            ground_truth_segmentation, ground_truth_vtk, cortex_labels
+                        )
+                values = compare_meshes(
+                    read_vtk_dataset(predicted_vtk), read_vtk_dataset(ground_truth_vtk),
+                    surface_dice_tolerance=surface_dice_tolerance,
+                )
+                writer.writerow(
+                    [lst_data_gt[index][0], surface_dice_tolerance,
+                     *(values[name] for name in metric_names)]
+                )
+                print(f"Surface metrics [{index + 1}/{len(predicted_vtk_files)}]: {values}")
     # Step 4 : Compute the GI metric
     if not compute_gi:
         header = ["time", "GI", "Normalized_GI"]
@@ -620,8 +694,7 @@ def compute_evaluation(
         with open(path_csv, mode="w", newline="") as f:
             writer = csv.writer(f, delimiter=" ")
             writer.writerow(header)
-            vtk_files = glob.glob(os.path.join(pred_path, "vtk", "*.vtk"))
-            vtk_files.sort()
+            vtk_files = predicted_vtk_files
             for i in range(len(vtk_files)):
                 print(vtk_files[i])
                 folded_mesh = meshio.read(vtk_files[i])
@@ -655,6 +728,18 @@ if __name__ == '__main__':
     parser.add_argument('--plane', help='Whether slice of images', type=int, default=0)
     parser.add_argument('--gi_normalized', type=str, help='Path to the csv file containing the normalized GI values', default="/home/florian/PycharmProjects/Paper_registration_cortex/data/macaque/GT/gi.csv")
     parser.add_argument('--rotate', type=int, help='Rotate slide', default=90)
+    parser.add_argument(
+        '--surface_metrics', action='store_true',
+        help='Compute spatial alignment and local curvature metrics',
+    )
+    parser.add_argument(
+        '--surface_dice_tolerance', type=float, default=1.0,
+        help='Distance tolerance in mm for surface Dice (default: 1.0)',
+    )
     args = parser.parse_args()
     print(args)
-    compute_evaluation(args.dataset_yaml, args.pred, args.dice, args.vtk, args.flow, args.gi, args.img_slice, args.plane, args.gi_normalized, args.rotate)
+    compute_evaluation(
+        args.dataset_yaml, args.pred, args.dice, args.vtk, args.flow, args.gi,
+        args.img_slice, args.plane, args.gi_normalized, args.rotate,
+        args.surface_metrics, args.surface_dice_tolerance,
+    )

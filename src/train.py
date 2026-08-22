@@ -69,8 +69,6 @@ def parse_args() -> Namespace:
             Optimizer learning rate.
         lambda_seg : float
             Weight for the segmentation loss term.
-        lambda_sdf : float
-            Weight for the SDF loss term.
         lambda_sim : float
             Weight for the image-similarity loss term.
         lambda_reg : float
@@ -94,7 +92,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--dataset",
         type=str,
-        default="/home/florian/PyCharmMiscProject/data/babofet.yaml",
+        default="/home/florian/PyCharmMiscProject/data/dhcpatlas.yaml",
         help="Path to the dataset configuration file.",
     )
     parser.add_argument(
@@ -137,22 +135,17 @@ def parse_args() -> Namespace:
         default=10.0,
         help="Weight for the segmentation loss term.",
     )
-    parser.add_argument(
-        "--lambda_sdf",
-        type=float,
-        default=0.0,
-        help="Weight for the SDF loss term.",
-    )
+
     parser.add_argument(
         "--lambda_sim",
         type=float,
-        default=1.0,
+        default=0.0,
         help="Weight for the image-similarity loss term.",
     )
     parser.add_argument(
         "--lambda_reg",
         type=float,
-        default=100,
+        default=1000,
         help="Weight for the regularisation loss term.",
     )
     parser.add_argument(
@@ -160,6 +153,24 @@ def parse_args() -> Namespace:
         type=float,
         default=0.00001,
         help="Weight for the Jacobian-determinant loss term.",
+    )
+    parser.add_argument(
+        "--lambda_surface",
+        type=float,
+        default=0.01,
+        help="Weight for the differentiable surface Chamfer loss.",
+    )
+    parser.add_argument(
+        "--surface_num_points",
+        type=int,
+        default=4096,
+        help="Number of vertices sampled from each surface for Chamfer loss.",
+    )
+    parser.add_argument(
+        "--surface_inverse_iterations",
+        type=int,
+        default=10,
+        help="Differentiable fixed-point iterations used to invert the pull field.",
     )
     parser.add_argument(
         "--precision",
@@ -228,8 +239,9 @@ def main(args: Namespace) -> None:
         num_workers=args.num_workers,
         size=config["rsize"],
         crop=config["csize"],
+        load_surface=config.get("load_surface", False),
         t0=config["t0"],
-        tn=config["tn"],
+        tn=config["tn"]
     )
 
     # --- Model ---
@@ -238,9 +250,13 @@ def main(args: Namespace) -> None:
         save_dir=save_dir,
         lambda_seg=args.lambda_seg,
         lambda_reg=args.lambda_reg,
-        lambda_sdf=args.lambda_sdf,
         lambda_sim=args.lambda_sim,
         lambda_jac=args.lambda_jac,
+        lambda_surface=config.get("lambda_surface", args.lambda_surface),
+        surface_num_points=config.get("surface_num_points", args.surface_num_points),
+        surface_inverse_iterations=config.get(
+            "surface_inverse_iterations", args.surface_inverse_iterations
+        ),
         shape=config["rsize"],
         step_time=0.1,
     )
@@ -262,11 +278,9 @@ def main(args: Namespace) -> None:
         check_val_every_n_epoch=args.check_val_every_n_epoch,
         enable_progress_bar=True,
     )
-    training_module.model.load_state_dict(torch.load("/home/florian/PyCharmMiscProject/results/babofet/train/26_12_12_04/best_registration.pt")) 
+    #training_module.model.load_state_dict(torch.load("/home/florian/PyCharmMiscProject/results/babofet/train/26_21_11_14/last_registration.pt"))
     trainer.fit(model=training_module, datamodule=datamodule, ckpt_path=args.checkpoint)
 
 
 if __name__ == "__main__":
     main(args=parse_args())
-
-

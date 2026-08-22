@@ -22,9 +22,12 @@ Author : Florian Scalvini
 """
 
 # --- Third-party ---
+import numpy as np
 import torch
 import torchio as tio
+import vtk
 from torchio import transforms
+from vtk.util.numpy_support import vtk_to_numpy
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -56,11 +59,13 @@ class SpatioTemporalDataset(torch.utils.data.Dataset):
         self,
         data: list,
         transform: transforms.Transform | None = None,
-        transform_seg: transforms.Transform | None = None,
+        augmentation: transforms.Transform | None = None,
+        load_surface: bool = False,
     ) -> None:
         super().__init__()
         self.transform = transform
-        self.transform_seg = transform_seg
+        self.augmentation = augmentation
+        self.load_surface = load_surface
         self.data: list = []
         for i in range(len(data)):
             if len(data[i]) >= 2:
@@ -70,9 +75,10 @@ class SpatioTemporalDataset(torch.utils.data.Dataset):
         """Return the number of subjects in the dataset."""
         return len(self.data)
 
+
     def __getitem__(
         self, idx: int
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple:
         """Return all sessions for subject *idx* sorted by age.
 
         Parameters
@@ -88,41 +94,41 @@ class SpatioTemporalDataset(torch.utils.data.Dataset):
             Stacked segmentation label maps of shape ``(T, 1, X, Y, Z)``.
         time_stack_out : torch.Tensor
             Acquisition ages of shape ``(T,)``.
-        sdf_stack_out : torch.Tensor
-            Stacked SDF maps of shape ``(T, 1, X, Y, Z)``.
         """
         mri_stack = []
-        seg_stack = []
         time_stack = []
-        sdf_stack = []
+        seg_stack = []
+        surface_vertices = []
+        surface_affines = []
         data = self.data[idx]
         for i in range(len(data)):
             session = tio.Subject(
                 image=tio.ScalarImage(data[i][0]),
-                label=tio.LabelMap(data[i][1]) if data[i][1] is not None else None,
-                sdf=tio.ScalarImage(data[i][1].replace("tissue", "sdf_cortex"))
+                label=tio.LabelMap(data[i][1])
             )
             if self.transform is not None:
-                session.image = self.transform(session.image) # type: ignore
-
-            if self.transform_seg is not None:
-                session.label = self.transform_seg(session.label) # type: ignore
-                session.sdf = self.transform_seg(session.sdf) # type: ignore
-
+                session = self.transform(session)
+            if self.augmentation is not None:
+                session = self.augmentation(session) # type: ignore
             mri_stack.append(session.image.data)
-            sdf_stack.append(session.sdf.data)
-            if session.label is not None:
-                seg_stack.append(session.label.data)
+            seg_stack.append(session.label.data)
             time_stack.append(data[i][2])
+            if self.load_surface:
+                surface_vertices.append(_read_surface_vertices(data[i][3]))
+                surface_affines.append(torch.as_tensor(session.image.affine, dtype=torch.float32))
             del session
 
         # ── 5. stack ──────────────────────────────────────────────────
         mri_stack_out = torch.stack(mri_stack, dim=0)  # (T_total, 1, X, Y, Z)
-        sdf_stack_out = torch.stack(sdf_stack, dim=0)  # (T_total, 1, X, Y, Z)
         seg_stack_out = torch.stack(seg_stack, dim=0)  # (T_total, 1, X, Y, Z)
         time_stack_out = torch.tensor(time_stack, dtype=torch.float)  # (T_total,)
-        return mri_stack_out, seg_stack_out, time_stack_out, sdf_stack_out
 
+        if self.load_surface:
+            return (
+                mri_stack_out, seg_stack_out, time_stack_out,
+                surface_vertices, surface_affines,
+            )
+        return mri_stack_out, seg_stack_out, time_stack_out
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Validation / test dataset
@@ -157,13 +163,19 @@ class SpatioTemporalDatasetValidation(torch.utils.data.Dataset):
         transform: transforms.Transform | None = None,
         transform_seg: transforms.Transform | None = None,
         reverse_transform: transforms.Transform | None = None,
+        load_surface: bool = False,
     ) -> None:
         super().__init__()
         self.transform = transform
         self.transform_seg = transform_seg
-        self.reverse_transform = reverse_transform
         self.data = data
-
+        self.load_surface = load_surface
+        resize_size = list(self.transform.transforms[0].target_shape)
+        shape_img = tio.ScalarImage(self.data[0][0][0]).shape[1:]
+        self.reverse_transform = tio.transforms.Compose([
+            tio.transforms.Resize(resize_size),
+            tio.transforms.CropOrPad(shape_img)
+        ])
     def __len__(self) -> int:
         """Return the number of subjects in the dataset."""
         return len(self.data)
@@ -172,13 +184,22 @@ class SpatioTemporalDatasetValidation(torch.utils.data.Dataset):
         """Return the inverse spatial transform, or ``None`` if not set."""
         return self.reverse_transform
 
-    def get_subject(self, idx: int) -> tio.Subject:
+    def get_surface_path(self, subject_idx: int, time_idx: int) -> str:
+        """Return the VTK surface path for a validation session."""
+        if not self.load_surface:
+            raise RuntimeError("surface loading is disabled")
+        return self.data[subject_idx][time_idx][3]
+
+
+    def get_subject(self, idx_subject: int, idx_session: int) -> tio.Subject:
         """Return the raw TorchIO subject at *idx* without applying transforms.
 
         Parameters
         ----------
-        idx : int
+        idx_subject : int
             Subject index.
+        idx_session : int
+            Session index.
 
         Returns
         -------
@@ -186,16 +207,16 @@ class SpatioTemporalDatasetValidation(torch.utils.data.Dataset):
             Subject loaded from disk with ``image`` and (optionally) ``label``
             fields, preserving the original affine for NIfTI export.
         """
-        data = self.data[idx]
+        data = self.data[idx_subject]
         session = tio.Subject(
-            image=tio.ScalarImage(data[0][0]),
-            label=tio.LabelMap(data[0][1]) if data[0][1] is not None else None
+            image=tio.ScalarImage(data[idx_session][0]),
+            label=tio.LabelMap(data[idx_session][1]) if data[idx_session][1] is not None else None,
         )
         return session
 
     def __getitem__(
         self, idx: int
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple:
         """Return all sessions for subject *idx* as stacked tensors.
 
         Parameters
@@ -216,6 +237,8 @@ class SpatioTemporalDatasetValidation(torch.utils.data.Dataset):
         mri_stack = []
         seg_stack = []
         time_stack = []
+        surface_vertices = []
+        surface_affines = []
         data = self.data[idx]
         for i in range(len(data)):
             session = tio.Subject(
@@ -230,6 +253,9 @@ class SpatioTemporalDatasetValidation(torch.utils.data.Dataset):
             if session.label is not None:
                 seg_stack.append(session.label.data)
             time_stack.append(data[i][2])
+            if self.load_surface:
+                surface_vertices.append(_read_surface_vertices(data[i][3]))
+                surface_affines.append(torch.as_tensor(session.image.affine, dtype=torch.float32))
             del session
         mri_stack_out = torch.stack(mri_stack, dim=0)  # (T_total, 1, X, Y, Z)
 
@@ -239,4 +265,33 @@ class SpatioTemporalDatasetValidation(torch.utils.data.Dataset):
             seg_stack_out = torch.empty(0)
 
         time_stack_out = torch.tensor(time_stack, dtype=torch.float)  # (T_total,)
+        if self.load_surface:
+            return (
+                mri_stack_out, seg_stack_out, time_stack_out,
+                surface_vertices, surface_affines,
+            )
         return mri_stack_out, seg_stack_out, time_stack_out
+
+
+def _read_surface_vertices(path: str) -> torch.Tensor:
+    """Read mesh points as a native-endian contiguous ``float32`` tensor."""
+    if path.lower().endswith(".vtp"):
+        reader = vtk.vtkXMLPolyDataReader()
+    elif path.lower().endswith(".vtk"):
+        reader = vtk.vtkGenericDataObjectReader()
+    else:
+        raise ValueError(f"surface must end with .vtk or .vtp: {path}")
+    reader.SetFileName(path)
+    reader.Update()
+    mesh = reader.GetOutput()
+    if not isinstance(mesh, vtk.vtkPointSet) or mesh.GetPoints() is None:
+        raise ValueError(f"surface does not contain a VTK point set: {path}")
+    points = np.array(
+        vtk_to_numpy(mesh.GetPoints().GetData()),
+        dtype=np.float32,
+        copy=True,
+        order="C",
+    )
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f"surface vertices must have shape (V,3), got {points.shape}: {path}")
+    return torch.from_numpy(points)

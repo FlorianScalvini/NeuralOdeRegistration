@@ -10,4 +10,7 @@ num_classes: 20
 date_format: null
 csize: [ 192, 224, 192 ]
 rsize: [ 192, 224, 192 ]
+load_surface: true
+surface_num_points: 4096
+surface_inverse_iterations: 10
 

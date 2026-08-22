@@ -66,6 +66,7 @@ def main(args: Namespace) -> None:
         num_workers=1,
         size=config["rsize"],
         crop=config["csize"],
+        load_surface=config.get("load_surface", False),
         t0=config["t0"],
         tn=config["tn"],
     )

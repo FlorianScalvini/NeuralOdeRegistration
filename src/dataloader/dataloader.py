@@ -117,6 +117,10 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
         Target spatial dimensions ``(D, H, W)`` after resizing.
     crop : tuple of int
         Crop/pad target ``(D, H, W)`` applied before resizing.
+    load_surface : bool
+        Load the cortical surface caches written by
+        :mod:`utils.precompute_surface` in the training dataset.  Required by
+        the mean-curvature loss.
     """
 
     def __init__(
@@ -131,9 +135,11 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
         tn: float = 1,
         size: tuple[int, int, int] = (192, 224, 192),
         crop: tuple[int, int, int] = (50, 50, 50),
+        load_surface: bool = False,
     ) -> None:
         super().__init__()
         self.root_dir = root_dir
+        self.load_surface = load_surface
         self.json_path = os.path.join(root_dir, json_path)
         self.json_path_val = os.path.join(root_dir, json_path_val)
         self.batch_size = batch_size
@@ -164,8 +170,13 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
                 session = [
                     root_dir + data['subjects'][i]['sessions'][j]['image'],
                     root_dir + data['subjects'][i]['sessions'][j]['segmentation'],
-                    data['subjects'][i]['sessions'][j]['age']
+                    data['subjects'][i]['sessions'][j]['age'],
                 ]
+                if self.load_surface:
+                    surface = data['subjects'][i]['sessions'][j].get('surface')
+                    if surface is None:
+                        raise ValueError("load_surface=True but a training session has no 'surface'")
+                    session.append(root_dir + surface)
                 subject.append(session)
 
             for j in range(len(subject)):
@@ -181,8 +192,13 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
                 session = [
                     root_dir + data['subjects'][i]['sessions'][j]['image'],
                     root_dir + data['subjects'][i]['sessions'][j]['segmentation'],
-                    data['subjects'][i]['sessions'][j]['age']
+                    data['subjects'][i]['sessions'][j]['age'],
                 ]
+                if self.load_surface:
+                    surface = data['subjects'][i]['sessions'][j].get('surface')
+                    if surface is None:
+                        raise ValueError("load_surface=True but a validation session has no 'surface'")
+                    session.append(root_dir + surface)
                 subject.append(session)
 
             for j in range(len(subject)):
@@ -192,7 +208,11 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
 
     def train_dataloader(self) -> torch.utils.data.DataLoader:
         """Return a shuffled DataLoader over the training subjects."""
-        dataset = SpatioTemporalDataset(self.data_train, self.transform, self.transform_seg)
+        dataset = SpatioTemporalDataset(
+            self.data_train,
+            self.transform,
+            load_surface=self.load_surface,
+        )
         return torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=1,
@@ -206,7 +226,10 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
 
     def val_dataloader(self) -> torch.utils.data.DataLoader:
         """Return an ordered DataLoader over the validation subjects."""
-        dataset = SpatioTemporalDatasetValidation(self.data_val, self.transform, self.transform_seg)
+        dataset = SpatioTemporalDatasetValidation(
+            self.data_val, self.transform, self.transform_seg,
+            load_surface=self.load_surface,
+        )
         return torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=1,
@@ -220,7 +243,10 @@ class SpatioTemporalSequenceDatamoduleJSON(pl.LightningDataModule):
 
     def test_dataloader(self) -> torch.utils.data.DataLoader:
         """Return an ordered DataLoader over the validation subjects for testing."""
-        dataset = SpatioTemporalDatasetValidation(self.data_val, self.transform, self.transform_seg)
+        dataset = SpatioTemporalDatasetValidation(
+            self.data_val, self.transform, self.transform_seg,
+            load_surface=self.load_surface,
+        )
         return torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=1,
